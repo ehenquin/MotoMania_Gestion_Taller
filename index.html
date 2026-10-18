@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#141519" />
+    <title>MOTOMANÍA | Gestión de taller</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">🏍</span>
+        <div>
+          <b>MOTO<span>MANÍA</span></b
+          ><small>GESTIÓN DE TALLER</small>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="connectionStatus" class="connection" role="status"
+          ><i></i> En línea</span
+        >
+        <button
+          id="refresh"
+          class="ghost header-button"
+          type="button"
+          title="Actualizar datos"
+          hidden
+        >
+          ↻ <span>Actualizar</span>
+        </button>
+        <button id="logout" class="ghost header-button" type="button" hidden>
+          Salir
+        </button>
+      </div>
+    </header>
+    <main>
+      <section id="login" class="panel login">
+        <h1>Acceso al taller</h1>
+        <p>Ingresá tu contraseña para continuar.</p>
+        <form id="loginForm">
+          <label class="sr-only" for="password">Contraseña</label>
+          <div class="password-field">
+            <input
+              id="password"
+              type="password"
+              placeholder="Contraseña"
+              autocomplete="current-password"
+              required
+            />
+            <button
+              id="togglePassword"
+              class="password-toggle"
+              type="button"
+              aria-label="Mostrar contraseña"
+              aria-controls="password"
+              aria-pressed="false"
+              title="Mostrar contraseña"
+            >
+              <span aria-hidden="true">👁</span>
+            </button>
+          </div>
+          <button id="loginSubmit" type="submit">Ingresar al panel</button>
+        </form>
+      </section>
+      <section id="app" hidden>
+        <div class="heading">
+          <div>
+            <h1>Panel del taller</h1>
+            <p id="summary">Cargando…</p>
+          </div>
+          <span id="loadMetric" class="load-metric" aria-live="polite"></span>
+        </div>
+        <nav id="nav">
+          <button data-view="dashboard" class="active">
+            <span>⌂</span> Inicio</button
+          ><button data-view="Clientes"><span>♙</span> Clientes</button
+          ><button data-view="Motos"><span>🏍</span> Motos</button
+          ><button data-view="Ordenes_Trabajo"><span>▣</span> Órdenes</button
+          ><button data-view="Pagos"><span>◈</span> Cobros</button
+          ><button data-view="Caja"><span>▤</span> Caja</button
+          ><button data-view="Servicios"><span>⚙</span> Servicios</button
+          ><button data-view="Repuestos"><span>▤</span> Repuestos</button>
+        </nav>
+        <section id="content"></section>
+      </section>
+      <div id="notice" role="status"></div>
+    </main>
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
