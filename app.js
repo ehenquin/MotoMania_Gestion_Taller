@@ -886,7 +886,9 @@ function intakeControls() {
 function intakeCatalog() {
   const available = (row) =>
     !["false", "0", "no", "inactivo"].includes(
-      String(row?.Activo ?? "").trim().toLowerCase(),
+      String(row?.Activo ?? "")
+        .trim()
+        .toLowerCase(),
     );
   return [
     ...(state.db.Servicios || [])
@@ -897,9 +899,7 @@ function intakeCatalog() {
         price: row.PrecioSugerido,
       })),
     ...(state.db.Repuestos || [])
-      .filter(
-        (row) => available(row) && String(row.Descripcion || "").trim(),
-      )
+      .filter((row) => available(row) && String(row.Descripcion || "").trim())
       .map((row) => ({
         type: "Repuesto",
         name: String(row.Descripcion).trim(),
@@ -1483,26 +1483,46 @@ function normalizeWhatsApp(value, fallback = false) {
 const whatsappIcon =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2a9.8 9.8 0 0 0-8.4 14.8L2.5 21.5l4.8-1.1A9.8 9.8 0 1 0 12 2Zm0 17.8a8 8 0 0 1-4.1-1.1l-.3-.2-2.8.7.8-2.7-.2-.3A8 8 0 1 1 12 19.8Zm4.4-6c-.2-.1-1.4-.7-1.6-.7s-.3-.1-.5.2-.6.7-.7.8-.3.2-.5.1a6.5 6.5 0 0 1-1.9-1.2 7 7 0 0 1-1.3-1.7c-.1-.2 0-.4.1-.5l.4-.4c.1-.1.2-.3.2-.4s0-.3-.1-.4l-.7-1.5c-.2-.4-.4-.3-.5-.3h-.4c-.2 0-.4.1-.6.3s-.8.8-.8 2 .8 2.3.9 2.5a9.2 9.2 0 0 0 3.5 3.1c.5.2 1 .4 1.3.5.5.2 1 .2 1.4.1.4-.1 1.4-.6 1.6-1.2.2-.6.2-1.1.1-1.2s-.2-.2-.4-.3Z"/></svg>';
 function customerDetail(id) {
-  const customer = (state.db.Clientes || []).find((row) => row.IDCliente === id);
+  const customer = (state.db.Clientes || []).find(
+    (row) => row.IDCliente === id,
+  );
   if (!customer) return toast("No se encontró el cliente.");
   state.galleryAbortController?.abort();
   state.activeOrderId = "";
   state.galleryRequest += 1;
   const bikes = (state.db.Motos || []).filter((row) => row.IDCliente === id);
   const phone = String(customer.Telefono || "").trim();
-  const whatsapp = normalizeWhatsApp(customer.WhatsApp) || normalizeWhatsApp(phone, true);
+  const whatsapp =
+    normalizeWhatsApp(customer.WhatsApp) || normalizeWhatsApp(phone, true);
   const contactActions = [
-    phone ? `<a class="contact-link" href="tel:${esc(phone.replace(/[^+\d]/g, ""))}">📞 Llamar</a>` : "",
-    whatsapp ? `<a class="contact-link contact-whatsapp" href="https://wa.me/${whatsapp}" target="_blank" rel="noopener noreferrer">${whatsappIcon} WhatsApp</a>` : "",
-  ].filter(Boolean).join("");
+    phone
+      ? `<a class="contact-link" href="tel:${esc(phone.replace(/[^+\d]/g, ""))}">📞 Llamar</a>`
+      : "",
+    whatsapp
+      ? `<a class="contact-link contact-whatsapp" href="https://wa.me/${whatsapp}" target="_blank" rel="noopener noreferrer">${whatsappIcon} WhatsApp</a>`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("");
   const detail = [
-    ["Teléfono", customer.Telefono], ["WhatsApp", customer.WhatsApp],
-    ["DNI", customer.DNI], ["Domicilio", customer.Domicilio],
+    ["Teléfono", customer.Telefono],
+    ["WhatsApp", customer.WhatsApp],
+    ["DNI", customer.DNI],
+    ["Domicilio", customer.Domicilio],
     ["Observaciones", customer.Observaciones],
-  ].filter(([, value]) => String(value || "").trim())
-    .map(([label, value]) => `<div class="contact-field"><small>${esc(label)}</small><strong>${esc(value)}</strong></div>`).join("");
-  $("#content").innerHTML = `<div class="toolbar"><div><h2>Ficha del cliente</h2><p class="muted">Agenda de contactos y motocicletas asociadas.</p></div><button class="ghost" id="back">← Volver a clientes</button></div><section class="panel contact-profile"><div class="contact-profile-head"><div class="contact-avatar">${esc((customer.Nombre || "C").trim().charAt(0).toUpperCase())}</div><div><h2>${esc(customer.Nombre || "Cliente sin nombre")}</h2><p class="muted">${bikes.length} moto${bikes.length === 1 ? "" : "s"} registrada${bikes.length === 1 ? "" : "s"}</p></div></div><div class="contact-actions">${contactActions}<button class="ghost" data-edit="Clientes:${esc(id)}">Editar cliente</button></div><div class="contact-fields">${detail || '<p class="muted">Sin datos adicionales.</p>'}</div></section><div class="toolbar"><h2>Motos asociadas (${bikes.length})</h2><button data-add-client-moto="${esc(id)}">+ Agregar moto</button></div><div class="list">${bikes.map(motoCard).join("") || '<div class="empty">Este cliente todavía no tiene motos registradas.</div>'}</div>`;
-  $("#back").onclick = () => { state.view = "Clientes"; render(); };
+  ]
+    .filter(([, value]) => String(value || "").trim())
+    .map(
+      ([label, value]) =>
+        `<div class="contact-field"><small>${esc(label)}</small><strong>${esc(value)}</strong></div>`,
+    )
+    .join("");
+  $("#content").innerHTML =
+    `<div class="toolbar"><div><h2>Ficha del cliente</h2><p class="muted">Agenda de contactos y motocicletas asociadas.</p></div><button class="ghost" id="back">← Volver a clientes</button></div><section class="panel contact-profile"><div class="contact-profile-head"><div class="contact-avatar">${esc((customer.Nombre || "C").trim().charAt(0).toUpperCase())}</div><div><h2>${esc(customer.Nombre || "Cliente sin nombre")}</h2><p class="muted">${bikes.length} moto${bikes.length === 1 ? "" : "s"} registrada${bikes.length === 1 ? "" : "s"}</p></div></div><div class="contact-actions">${contactActions}<button class="ghost" data-edit="Clientes:${esc(id)}">Editar cliente</button></div><div class="contact-fields">${detail || '<p class="muted">Sin datos adicionales.</p>'}</div></section><div class="toolbar"><h2>Motos asociadas (${bikes.length})</h2><button data-add-client-moto="${esc(id)}">+ Agregar moto</button></div><div class="list">${bikes.map(motoCard).join("") || '<div class="empty">Este cliente todavía no tiene motos registradas.</div>'}</div>`;
+  $("#back").onclick = () => {
+    state.view = "Clientes";
+    render();
+  };
   wire();
 }
 
@@ -1510,7 +1530,9 @@ function customerCard(client) {
   const phone = String(client.Telefono || "").trim(),
     whatsapp = String(client.WhatsApp || "").trim(),
     waNumber = normalizeWhatsApp(whatsapp) || normalizeWhatsApp(phone, true);
-  const bikesCount = (state.db.Motos || []).filter((bike) => bike.IDCliente === client.IDCliente).length;
+  const bikesCount = (state.db.Motos || []).filter(
+    (bike) => bike.IDCliente === client.IDCliente,
+  ).length;
   const rows = [
     phone && `<div><span>Teléfono</span><b>${esc(phone)}</b></div>`,
     whatsapp && `<div><span>WhatsApp</span><b>${esc(whatsapp)}</b></div>`,
@@ -1522,6 +1544,45 @@ function customerCard(client) {
     .join("");
   return `<article class="item customer-card"><div class="itemhead"><div><strong>${esc(client.Nombre || "Cliente sin nombre")}</strong></div><div class="customer-actions">${waNumber ? `<a class="whatsapp-button" href="https://wa.me/${waNumber}" target="_blank" rel="noopener noreferrer" aria-label="Abrir WhatsApp de ${esc(client.Nombre || "cliente")}">${whatsappIcon}<span>WhatsApp</span></a>` : ""}<button data-open-client="${esc(client.IDCliente)}">Ver ficha · ${bikesCount} moto${bikesCount === 1 ? "" : "s"}</button><button class="ghost" data-edit="Clientes:${esc(client.IDCliente)}">Editar</button></div></div><div class="customer-data">${rows || '<span class="muted">Sin datos de contacto.</span>'}</div>${client.Observaciones ? `<p class="customer-note">${esc(client.Observaciones)}</p>` : ""}</article>`;
 }
+function motoIsActive(bike) {
+  return !["false", "0", "no", "inactivo", "baja"].includes(
+    String(bike?.Activo ?? "")
+      .trim()
+      .toLowerCase(),
+  );
+}
+
+async function setMotoActive(id, active) {
+  const bike = (state.db.Motos || []).find((row) => row.IDMoto === id);
+  if (!bike) return toast("No se encontró la moto.");
+  if (motoIsActive(bike) === active) return;
+  const accepted = await confirmModal({
+    title: active ? "¿Reactivar esta moto?" : "¿Dar de baja esta moto?",
+    message: active
+      ? "Volverá a aparecer entre las motos activas. Todo su historial se conserva."
+      : "La moto quedará oculta del listado habitual. No se borrarán sus trabajos, fotos ni cobros.",
+    confirmText: active ? "Reactivar moto" : "Dar de baja",
+    cancelText: "Cancelar",
+    danger: !active,
+  });
+  if (!accepted) return;
+  await withSession(async () => {
+    await api("save", {
+      table: "Motos",
+      record: { IDMoto: id, Activo: active },
+    });
+    toast(
+      active
+        ? "Moto reactivada correctamente."
+        : "Moto dada de baja correctamente.",
+    );
+    await load();
+    if (state.view === "Motos") motoDetail(id);
+    else if (state.view === "Clientes" && bike.IDCliente)
+      customerDetail(bike.IDCliente);
+  });
+}
+
 function motoCard(bike) {
   const owner = (state.db.Clientes || []).find(
     (row) => row.IDCliente === bike.IDCliente,
@@ -1532,7 +1593,7 @@ function motoCard(bike) {
   const title =
     [bike.Patente, bike.Marca, bike.Modelo].filter(Boolean).join(" · ") ||
     "Moto sin identificar";
-  return `<article class="item moto-card"><div class="itemhead"><div><strong>${esc(title)}</strong><small>Cliente: ${esc(owner?.Nombre || "Sin cliente")}</small></div><div class="customer-actions">${owner ? `<button class="ghost" data-open-client="${esc(owner.IDCliente)}">Ver cliente</button>` : ""}<button data-open-moto="${esc(bike.IDMoto)}">Ver historial</button><button class="ghost" data-edit="Motos:${esc(bike.IDMoto)}">Editar</button></div></div><p class="muted">${historyCount} orden${historyCount === 1 ? "" : "es"} registrada${historyCount === 1 ? "" : "s"}</p></article>`;
+  return `<article class="item moto-card"><div class="itemhead"><div><strong>${esc(title)}</strong><small>Cliente: ${esc(owner?.Nombre || "Sin cliente")}</small></div><div class="customer-actions">${owner ? `<button class="ghost" data-open-client="${esc(owner.IDCliente)}">Ver cliente</button>` : ""}<button data-open-moto="${esc(bike.IDMoto)}">Ver historial</button><button class="ghost" data-edit="Motos:${esc(bike.IDMoto)}">Editar</button><button class="ghost" data-moto-active="${esc(bike.IDMoto)}" data-active="${motoIsActive(bike) ? "false" : "true"}">${motoIsActive(bike) ? "Dar de baja" : "Reactivar"}</button></div></div>${!motoIsActive(bike) ? '<p class="muted"><b>● Moto dada de baja</b></p>' : ""}<p class="muted">${historyCount} orden${historyCount === 1 ? "" : "es"} registrada${historyCount === 1 ? "" : "s"}</p></article>`;
 }
 function paymentCard(payment) {
   const order = (state.db.Ordenes_Trabajo || []).find(
@@ -1566,9 +1627,11 @@ function normalizeSearch(value) {
 function searchableRecord(table, record) {
   const related = [];
   if (table === "Clientes") {
-    related.push(...(state.db.Motos || []).filter(
-      (bike) => String(bike.IDCliente) === String(record.IDCliente),
-    ));
+    related.push(
+      ...(state.db.Motos || []).filter(
+        (bike) => String(bike.IDCliente) === String(record.IDCliente),
+      ),
+    );
   } else if (table === "Motos") {
     const owner = (state.db.Clientes || []).find(
       (client) => String(client.IDCliente) === String(record.IDCliente),
@@ -1587,15 +1650,23 @@ function list(table) {
       ? (state.db[table] || []).filter((row) => !isDuplicatedPaymentHeader(row))
       : state.db[table] || [];
   $("#content").innerHTML =
-    `<div class="toolbar"><div><h2>${defs[table].title}</h2><p class="muted">${rows.length} registro${rows.length === 1 ? "" : "s"}</p></div><button data-add="${table}">+ Nuevo</button></div><input id="search" placeholder="Buscar por nombre, patente, descripción…" aria-label="Buscar en ${defs[table].title}"><div class="list" id="results"></div>`;
+    `<div class="toolbar"><div><h2>${defs[table].title}</h2><p class="muted">${rows.length} registro${rows.length === 1 ? "" : "s"}</p></div><button data-add="${table}">+ Nuevo</button></div>${table === "Motos" ? '<label style="display:flex;align-items:center;gap:10px;margin:12px 0;cursor:pointer"><input type="checkbox" id="showInactiveMotos" style="width:20px;height:20px"> Mostrar motos dadas de baja</label>' : ""}<input id="search" placeholder="Buscar por nombre, patente, descripción…" aria-label="Buscar en ${defs[table].title}"><div class="list" id="results"></div>`;
   const display = () => {
     $("#results").innerHTML =
       rows
+        .filter(
+          (r) =>
+            table !== "Motos" ||
+            motoIsActive(r) ||
+            $("#showInactiveMotos")?.checked,
+        )
         .filter((r) => {
           const query = $("#search").value.trim();
           if (!query) return true;
           const searchable = searchableRecord(table, r);
-          return query.split(/\s+/).every((term) => searchable.includes(normalizeSearch(term)));
+          return query
+            .split(/\s+/)
+            .every((term) => searchable.includes(normalizeSearch(term)));
         })
         .map((r) =>
           table === "Clientes"
@@ -1612,6 +1683,7 @@ function list(table) {
     wire();
   };
   $("#search").oninput = display;
+  $("#showInactiveMotos")?.addEventListener("change", display);
   display();
 }
 function selectOpts(field) {
@@ -1665,13 +1737,45 @@ function form(table, id = "", preset = {}) {
   $("#back").onclick = render;
   $("#editForm").onsubmit = async (e) => {
     e.preventDefault();
-    const obj = Object.fromEntries(new FormData(e.target));
+
+    const formulario = e.currentTarget;
+    const boton = formulario.querySelector(
+      'button[type="submit"], button:not([type])',
+    );
+
+    // Evitar doble clic o múltiples envíos simultáneos
+    if (formulario.dataset.saving === "true") return;
+
+    formulario.dataset.saving = "true";
+
+    if (boton) {
+      boton.disabled = true;
+      boton.textContent = "Guardando...";
+    }
+
+    const obj = Object.fromEntries(new FormData(formulario));
     if (id) obj[pk] = id;
-    await withSession(async () => {
+
+    try {
       await api("save", { table, record: obj });
+
       toast("Guardado correctamente");
+
       await load();
-    });
+    } catch (error) {
+      if (error instanceof SessionExpiredError) {
+        showLogin(error.message);
+      } else {
+        toast("No se pudo guardar: " + error.message);
+      }
+    } finally {
+      formulario.dataset.saving = "false";
+
+      if (boton) {
+        boton.disabled = false;
+        boton.textContent = "Guardar";
+      }
+    }
   };
 }
 function ensurePhotoGalleryStyles() {
@@ -2028,7 +2132,7 @@ function motoDetail(id) {
       .join("") ||
     '<div class="empty">Esta moto todavía no tiene órdenes registradas.</div>';
   $("#content").innerHTML =
-    `<div class="toolbar"><div><h2>${esc(title || "Moto")}</h2><p class="muted">Cliente: ${esc(owner?.Nombre || "Sin cliente")}</p></div><div>${owner ? `<button class="ghost" data-open-client="${esc(owner.IDCliente)}">Ver ficha del cliente</button>` : ""}<button class="ghost" id="back">Volver a motos</button><button data-edit="Motos:${esc(id)}">Editar moto</button></div></div><section class="panel"><h2>Historial de servicios</h2><p class="muted">Órdenes vinculadas a esta moto, desde el ingreso más reciente.</p><div class="list">${history}</div></section>`;
+    `<div class="toolbar"><div><h2>${esc(title || "Moto")}</h2><p class="muted">Cliente: ${esc(owner?.Nombre || "Sin cliente")}</p></div><div>${owner ? `<button class="ghost" data-open-client="${esc(owner.IDCliente)}">Ver ficha del cliente</button>` : ""}<button class="ghost" id="back">Volver a motos</button><button data-edit="Motos:${esc(id)}">Editar moto</button><button class="ghost" data-moto-active="${esc(id)}" data-active="${motoIsActive(bike) ? "false" : "true"}">${motoIsActive(bike) ? "Dar de baja" : "Reactivar"}</button></div></div>${!motoIsActive(bike) ? '<p class="muted"><b>● Moto dada de baja</b></p>' : ""}<section class="panel"><h2>Historial de servicios</h2><p class="muted">Órdenes vinculadas a esta moto, desde el ingreso más reciente.</p><div class="list">${history}</div></section>`;
   $("#back").onclick = () => {
     state.view = "Motos";
     render();
@@ -2090,6 +2194,13 @@ function resumeIntake() {
   startIntake(loadIntakeDraft());
 }
 function wire() {
+  document.querySelectorAll("[data-moto-active]").forEach((button) => {
+    button.onclick = () =>
+      setMotoActive(
+        button.dataset.motoActive,
+        button.dataset.active === "true",
+      );
+  });
   document
     .querySelectorAll("[data-intake]")
     .forEach(
@@ -2127,14 +2238,18 @@ function wire() {
   document
     .querySelectorAll("[data-open]")
     .forEach((b) => (b.onclick = () => orderDetail(b.dataset.open)));
-  document.querySelectorAll("[data-open-client]").forEach(
-    (button) => (button.onclick = () => customerDetail(button.dataset.openClient)),
-  );
+  document
+    .querySelectorAll("[data-open-client]")
+    .forEach(
+      (button) =>
+        (button.onclick = () => customerDetail(button.dataset.openClient)),
+    );
   document.querySelectorAll("[data-add-client-moto]").forEach(
-    (button) => (button.onclick = () => {
-      state.view = "Motos";
-      form("Motos", "", { IDCliente: button.dataset.addClientMoto });
-    }),
+    (button) =>
+      (button.onclick = () => {
+        state.view = "Motos";
+        form("Motos", "", { IDCliente: button.dataset.addClientMoto });
+      }),
   );
   document
     .querySelectorAll("[data-open-moto]")
