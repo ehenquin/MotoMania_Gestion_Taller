@@ -1481,10 +1481,35 @@ function normalizeWhatsApp(value, fallback = false) {
 }
 const whatsappIcon =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2a9.8 9.8 0 0 0-8.4 14.8L2.5 21.5l4.8-1.1A9.8 9.8 0 1 0 12 2Zm0 17.8a8 8 0 0 1-4.1-1.1l-.3-.2-2.8.7.8-2.7-.2-.3A8 8 0 1 1 12 19.8Zm4.4-6c-.2-.1-1.4-.7-1.6-.7s-.3-.1-.5.2-.6.7-.7.8-.3.2-.5.1a6.5 6.5 0 0 1-1.9-1.2 7 7 0 0 1-1.3-1.7c-.1-.2 0-.4.1-.5l.4-.4c.1-.1.2-.3.2-.4s0-.3-.1-.4l-.7-1.5c-.2-.4-.4-.3-.5-.3h-.4c-.2 0-.4.1-.6.3s-.8.8-.8 2 .8 2.3.9 2.5a9.2 9.2 0 0 0 3.5 3.1c.5.2 1 .4 1.3.5.5.2 1 .2 1.4.1.4-.1 1.4-.6 1.6-1.2.2-.6.2-1.1.1-1.2s-.2-.2-.4-.3Z"/></svg>';
+function customerDetail(id) {
+  const customer = (state.db.Clientes || []).find((row) => row.IDCliente === id);
+  if (!customer) return toast("No se encontró el cliente.");
+  state.galleryAbortController?.abort();
+  state.activeOrderId = "";
+  state.galleryRequest += 1;
+  const bikes = (state.db.Motos || []).filter((row) => row.IDCliente === id);
+  const phone = String(customer.Telefono || "").trim();
+  const whatsapp = normalizeWhatsApp(customer.WhatsApp) || normalizeWhatsApp(phone, true);
+  const contactActions = [
+    phone ? `<a class="contact-link" href="tel:${esc(phone.replace(/[^+\d]/g, ""))}">📞 Llamar</a>` : "",
+    whatsapp ? `<a class="contact-link contact-whatsapp" href="https://wa.me/${whatsapp}" target="_blank" rel="noopener noreferrer">${whatsappIcon} WhatsApp</a>` : "",
+  ].filter(Boolean).join("");
+  const detail = [
+    ["Teléfono", customer.Telefono], ["WhatsApp", customer.WhatsApp],
+    ["DNI", customer.DNI], ["Domicilio", customer.Domicilio],
+    ["Observaciones", customer.Observaciones],
+  ].filter(([, value]) => String(value || "").trim())
+    .map(([label, value]) => `<div class="contact-field"><small>${esc(label)}</small><strong>${esc(value)}</strong></div>`).join("");
+  $("#content").innerHTML = `<div class="toolbar"><div><h2>Ficha del cliente</h2><p class="muted">Agenda de contactos y motocicletas asociadas.</p></div><button class="ghost" id="back">← Volver a clientes</button></div><section class="panel contact-profile"><div class="contact-profile-head"><div class="contact-avatar">${esc((customer.Nombre || "C").trim().charAt(0).toUpperCase())}</div><div><h2>${esc(customer.Nombre || "Cliente sin nombre")}</h2><p class="muted">${bikes.length} moto${bikes.length === 1 ? "" : "s"} registrada${bikes.length === 1 ? "" : "s"}</p></div></div><div class="contact-actions">${contactActions}<button class="ghost" data-edit="Clientes:${esc(id)}">Editar cliente</button></div><div class="contact-fields">${detail || '<p class="muted">Sin datos adicionales.</p>'}</div></section><div class="toolbar"><h2>Motos asociadas (${bikes.length})</h2><button data-add-client-moto="${esc(id)}">+ Agregar moto</button></div><div class="list">${bikes.map(motoCard).join("") || '<div class="empty">Este cliente todavía no tiene motos registradas.</div>'}</div>`;
+  $("#back").onclick = () => { state.view = "Clientes"; render(); };
+  wire();
+}
+
 function customerCard(client) {
   const phone = String(client.Telefono || "").trim(),
     whatsapp = String(client.WhatsApp || "").trim(),
     waNumber = normalizeWhatsApp(whatsapp) || normalizeWhatsApp(phone, true);
+  const bikesCount = (state.db.Motos || []).filter((bike) => bike.IDCliente === client.IDCliente).length;
   const rows = [
     phone && `<div><span>Teléfono</span><b>${esc(phone)}</b></div>`,
     whatsapp && `<div><span>WhatsApp</span><b>${esc(whatsapp)}</b></div>`,
@@ -1494,7 +1519,7 @@ function customerCard(client) {
   ]
     .filter(Boolean)
     .join("");
-  return `<article class="item customer-card"><div class="itemhead"><div><strong>${esc(client.Nombre || "Cliente sin nombre")}</strong></div><div class="customer-actions">${waNumber ? `<a class="whatsapp-button" href="https://wa.me/${waNumber}" target="_blank" rel="noopener noreferrer" aria-label="Abrir WhatsApp de ${esc(client.Nombre || "cliente")}">${whatsappIcon}<span>WhatsApp</span></a>` : ""}<button class="ghost" data-edit="Clientes:${esc(client.IDCliente)}">Editar</button></div></div><div class="customer-data">${rows || '<span class="muted">Sin datos de contacto.</span>'}</div>${client.Observaciones ? `<p class="customer-note">${esc(client.Observaciones)}</p>` : ""}</article>`;
+  return `<article class="item customer-card"><div class="itemhead"><div><strong>${esc(client.Nombre || "Cliente sin nombre")}</strong></div><div class="customer-actions">${waNumber ? `<a class="whatsapp-button" href="https://wa.me/${waNumber}" target="_blank" rel="noopener noreferrer" aria-label="Abrir WhatsApp de ${esc(client.Nombre || "cliente")}">${whatsappIcon}<span>WhatsApp</span></a>` : ""}<button data-open-client="${esc(client.IDCliente)}">Ver ficha · ${bikesCount} moto${bikesCount === 1 ? "" : "s"}</button><button class="ghost" data-edit="Clientes:${esc(client.IDCliente)}">Editar</button></div></div><div class="customer-data">${rows || '<span class="muted">Sin datos de contacto.</span>'}</div>${client.Observaciones ? `<p class="customer-note">${esc(client.Observaciones)}</p>` : ""}</article>`;
 }
 function motoCard(bike) {
   const owner = (state.db.Clientes || []).find(
@@ -1506,7 +1531,7 @@ function motoCard(bike) {
   const title =
     [bike.Patente, bike.Marca, bike.Modelo].filter(Boolean).join(" · ") ||
     "Moto sin identificar";
-  return `<article class="item moto-card"><div class="itemhead"><div><strong>${esc(title)}</strong><small>Cliente: ${esc(owner?.Nombre || "Sin cliente")}</small></div><div class="customer-actions"><button data-open-moto="${esc(bike.IDMoto)}">Ver historial</button><button class="ghost" data-edit="Motos:${esc(bike.IDMoto)}">Editar</button></div></div><p class="muted">${historyCount} orden${historyCount === 1 ? "" : "es"} registrada${historyCount === 1 ? "" : "s"}</p></article>`;
+  return `<article class="item moto-card"><div class="itemhead"><div><strong>${esc(title)}</strong><small>Cliente: ${esc(owner?.Nombre || "Sin cliente")}</small></div><div class="customer-actions">${owner ? `<button class="ghost" data-open-client="${esc(owner.IDCliente)}">Ver cliente</button>` : ""}<button data-open-moto="${esc(bike.IDMoto)}">Ver historial</button><button class="ghost" data-edit="Motos:${esc(bike.IDMoto)}">Editar</button></div></div><p class="muted">${historyCount} orden${historyCount === 1 ? "" : "es"} registrada${historyCount === 1 ? "" : "s"}</p></article>`;
 }
 function paymentCard(payment) {
   const order = (state.db.Ordenes_Trabajo || []).find(
@@ -1976,7 +2001,7 @@ function motoDetail(id) {
       .join("") ||
     '<div class="empty">Esta moto todavía no tiene órdenes registradas.</div>';
   $("#content").innerHTML =
-    `<div class="toolbar"><div><h2>${esc(title || "Moto")}</h2><p class="muted">Cliente: ${esc(owner?.Nombre || "Sin cliente")}</p></div><div><button class="ghost" id="back">Volver a motos</button><button data-edit="Motos:${esc(id)}">Editar moto</button></div></div><section class="panel"><h2>Historial de servicios</h2><p class="muted">Órdenes vinculadas a esta moto, desde el ingreso más reciente.</p><div class="list">${history}</div></section>`;
+    `<div class="toolbar"><div><h2>${esc(title || "Moto")}</h2><p class="muted">Cliente: ${esc(owner?.Nombre || "Sin cliente")}</p></div><div>${owner ? `<button class="ghost" data-open-client="${esc(owner.IDCliente)}">Ver ficha del cliente</button>` : ""}<button class="ghost" id="back">Volver a motos</button><button data-edit="Motos:${esc(id)}">Editar moto</button></div></div><section class="panel"><h2>Historial de servicios</h2><p class="muted">Órdenes vinculadas a esta moto, desde el ingreso más reciente.</p><div class="list">${history}</div></section>`;
   $("#back").onclick = () => {
     state.view = "Motos";
     render();
@@ -2075,6 +2100,15 @@ function wire() {
   document
     .querySelectorAll("[data-open]")
     .forEach((b) => (b.onclick = () => orderDetail(b.dataset.open)));
+  document.querySelectorAll("[data-open-client]").forEach(
+    (button) => (button.onclick = () => customerDetail(button.dataset.openClient)),
+  );
+  document.querySelectorAll("[data-add-client-moto]").forEach(
+    (button) => (button.onclick = () => {
+      state.view = "Motos";
+      form("Motos", "", { IDCliente: button.dataset.addClientMoto });
+    }),
+  );
   document
     .querySelectorAll("[data-open-moto]")
     .forEach((b) => (b.onclick = () => motoDetail(b.dataset.openMoto)));
