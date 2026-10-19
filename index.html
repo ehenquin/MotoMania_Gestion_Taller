@@ -13,7 +13,7 @@
         <span class="brand-mark" aria-hidden="true">🏍</span>
         <div>
           <b>MOTO<span>MANÍA</span></b
-          ><small>GESTIÓN DE TALLER</small>
+          ><small>TALLER DE MOTOS</small>
         </div>
       </div>
       <div class="header-actions">
@@ -66,21 +66,25 @@
       <section id="app" hidden>
         <div class="heading">
           <div>
-            <h1>Panel del taller</h1>
+            <h1>Mi taller</h1>
             <p id="summary">Cargando…</p>
           </div>
           <span id="loadMetric" class="load-metric" aria-live="polite"></span>
         </div>
-        <nav id="nav">
-          <button data-view="dashboard" class="active">
-            <span>⌂</span> Inicio</button
-          ><button data-view="Clientes"><span>♙</span> Clientes</button
-          ><button data-view="Motos"><span>🏍</span> Motos</button
-          ><button data-view="Ordenes_Trabajo"><span>▣</span> Órdenes</button
-          ><button data-view="Pagos"><span>◈</span> Cobros</button
-          ><button data-view="Caja"><span>▤</span> Caja</button
-          ><button data-view="Servicios"><span>⚙</span> Servicios</button
-          ><button data-view="Repuestos"><span>▤</span> Repuestos</button>
+        <nav id="nav" aria-label="Secciones del taller">
+          <button data-view="dashboard" class="active"><span>⌂</span> Inicio</button>
+          <button data-view="Clientes"><span>♙</span> Clientes</button>
+          <button data-view="Motos"><span>🏍</span> Motos</button>
+          <button data-view="Ordenes_Trabajo"><span>▣</span> Trabajos</button>
+          <button data-view="Caja"><span>▤</span> Caja</button>
+          <details class="nav-more">
+            <summary>⋯ Más</summary>
+            <div class="nav-more-menu">
+              <button data-view="Pagos"><span>◈</span> Cobros</button>
+              <button data-view="Servicios"><span>⚙</span> Servicios</button>
+              <button data-view="Repuestos"><span>▤</span> Repuestos</button>
+            </div>
+          </details>
         </nav>
         <section id="content"></section>
       </section>
