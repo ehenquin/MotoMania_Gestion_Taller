@@ -413,6 +413,7 @@ $("#nav").onclick = async (e) => {
       if (!leave) return;
     }
     state.view = b.dataset.view;
+    document.querySelector(".nav-more")?.removeAttribute("open");
     render();
   }
 };
