@@ -1555,6 +1555,31 @@ function isDuplicatedPaymentHeader(row) {
     String(row?.IDOrden || "").trim() === "IDOrden"
   );
 }
+// Búsqueda cruzada: clientes <-> motos, sin modificar el backend.
+function normalizeSearch(value) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+function searchableRecord(table, record) {
+  const related = [];
+  if (table === "Clientes") {
+    related.push(...(state.db.Motos || []).filter(
+      (bike) => String(bike.IDCliente) === String(record.IDCliente),
+    ));
+  } else if (table === "Motos") {
+    const owner = (state.db.Clientes || []).find(
+      (client) => String(client.IDCliente) === String(record.IDCliente),
+    );
+    if (owner) related.push(owner);
+  }
+  return [record, ...related]
+    .flatMap((row) => Object.values(row || {}))
+    .map(normalizeSearch)
+    .join(" ");
+}
 function list(table) {
   if (!defs[table]) return;
   const rows =
@@ -1566,11 +1591,12 @@ function list(table) {
   const display = () => {
     $("#results").innerHTML =
       rows
-        .filter((r) =>
-          JSON.stringify(r)
-            .toLowerCase()
-            .includes($("#search").value.toLowerCase()),
-        )
+        .filter((r) => {
+          const query = $("#search").value.trim();
+          if (!query) return true;
+          const searchable = searchableRecord(table, r);
+          return query.split(/\s+/).every((term) => searchable.includes(normalizeSearch(term)));
+        })
         .map((r) =>
           table === "Clientes"
             ? customerCard(r)
