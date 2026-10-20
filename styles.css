@@ -675,3 +675,771 @@ button[data-order-whatsapp]:disabled {
     flex-basis: 15px;
   }
 }
+
+
+
+
+
+/* ==========================================================
+   MOTOMANÍA — SISTEMA VISUAL DÍA / NOCHE
+   MODO CLARO PROFESIONAL
+
+   El modo oscuro original permanece intacto.
+   Activación: html[data-theme="light"]
+   ========================================================== */
+
+
+/* ==========================================================
+   1. VARIABLES GENERALES DEL TEMA CLARO
+   ========================================================== */
+
+html[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f3f5f9;
+  --surface: #ffffff;
+  --surface2: #f7f9fc;
+  --surface3: #eaf0f6;
+
+  --line: #d9e1eb;
+  --text: #172334;
+  --muted: #64748b;
+
+  --red: #d71934;
+  --red2: #b51229;
+
+  --green: #168b59;
+  --amber: #ae7010;
+  --blue: #2464bd;
+
+  --shadow: 0 5px 22px rgba(24, 42, 68, 0.07);
+
+  color: var(--text);
+  background: var(--bg);
+}
+
+
+/* ==========================================================
+   2. FONDO PRINCIPAL
+   ========================================================== */
+
+html[data-theme="light"] body {
+  color: var(--text);
+
+  background:
+    radial-gradient(ellipse 950px 400px at 100% -180px,
+      rgba(215, 25, 52, 0.045),
+      transparent 75%),
+    #f3f5f9;
+}
+
+html[data-theme="light"] h1,
+html[data-theme="light"] h2,
+html[data-theme="light"] h3 {
+  color: #172334;
+}
+
+html[data-theme="light"] p,
+html[data-theme="light"] label {
+  color: #526276;
+}
+
+html[data-theme="light"] .muted,
+html[data-theme="light"] small,
+html[data-theme="light"] .load-metric {
+  color: #66778c;
+}
+
+
+/* ==========================================================
+   3. BARRA SUPERIOR
+   ========================================================== */
+
+html[data-theme="light"] .topbar {
+  background: rgba(255, 255, 255, 0.96);
+  border-bottom: 1px solid #dce3ec;
+  box-shadow: 0 3px 15px rgba(20, 35, 55, 0.06);
+}
+
+html[data-theme="light"] .brand b {
+  color: #172334;
+}
+
+html[data-theme="light"] .brand b span {
+  color: #d71934;
+}
+
+html[data-theme="light"] .brand small {
+  color: #64748b;
+}
+
+html[data-theme="light"] .brand-mark {
+  background: #fff0f2;
+  border-color: #efb6bf;
+}
+
+html[data-theme="light"] .connection {
+  color: #166a48;
+  background: #e7f6ed;
+  border-color: #b9e1cb;
+}
+
+html[data-theme="light"] .connection.is-loading {
+  color: #865807;
+  background: #fff4d9;
+  border-color: #ead09b;
+}
+
+html[data-theme="light"] .connection.is-error {
+  color: #b42338;
+  background: #fff0f2;
+  border-color: #f1c1c8;
+}
+
+
+/* ==========================================================
+   4. BOTÓN DÍA / NOCHE
+   ========================================================== */
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+
+  white-space: nowrap;
+}
+
+.theme-toggle .theme-toggle-icon {
+  font-size: 19px;
+  line-height: 1;
+}
+
+.theme-toggle .theme-toggle-label {
+  font-size: 12px;
+  font-weight: 750;
+}
+
+html[data-theme="light"] .theme-toggle {
+  background: #fff5d9;
+  border-color: #e9d49d;
+  color: #845a0a;
+  box-shadow: none;
+}
+
+html[data-theme="light"] .theme-toggle:hover {
+  background: #ffe9b1;
+  border-color: #dbb96d;
+  color: #765005;
+}
+
+
+/* ==========================================================
+   5. NAVEGACIÓN PRINCIPAL
+   ========================================================== */
+
+html[data-theme="light"] nav#nav {
+  background: #ffffff;
+  border-color: #d9e1eb;
+}
+
+html[data-theme="light"] nav#nav button,
+html[data-theme="light"] .ghost {
+  background: #eef2f7;
+  color: #263548;
+  border-color: #d3dce7;
+  box-shadow: none;
+}
+
+html[data-theme="light"] nav#nav button:hover,
+html[data-theme="light"] .ghost:hover {
+  background: #e0e7f0;
+  border-color: #bac8d9;
+  color: #172334;
+  box-shadow: none;
+}
+
+html[data-theme="light"] nav#nav button.active {
+  color: #ffffff;
+  background: linear-gradient(135deg, #e52638, #b91128);
+  border-color: #cf2337;
+  box-shadow: 0 4px 12px rgba(200, 25, 48, 0.14);
+}
+
+html[data-theme="light"] nav#nav button.active span {
+  color: #ffffff;
+}
+
+html[data-theme="light"] .nav-more summary {
+  background: #eef2f7;
+  color: #263548;
+  border-color: #d3dce7;
+}
+
+html[data-theme="light"] .nav-more[open] summary {
+  background: #e0e7f0;
+}
+
+html[data-theme="light"] .nav-more-menu {
+  background: #ffffff;
+  border-color: #d9e1eb;
+  box-shadow: 0 12px 25px rgba(20, 35, 55, 0.12);
+}
+
+
+/* ==========================================================
+   6. PANELES, TARJETAS Y LISTADOS
+   ========================================================== */
+
+html[data-theme="light"] .panel,
+html[data-theme="light"] .card,
+html[data-theme="light"] .item,
+html[data-theme="light"] .order-row,
+html[data-theme="light"] .cash-row,
+html[data-theme="light"] .cash-stat {
+  color: #172334;
+
+  background: #ffffff;
+
+  border-color: #d9e1eb;
+
+  box-shadow: 0 4px 18px rgba(20, 35, 55, 0.045);
+}
+
+html[data-theme="light"] .item:hover,
+html[data-theme="light"] .order-row:hover {
+  border-color: #b6c5d6;
+}
+
+html[data-theme="light"] .item strong,
+html[data-theme="light"] .order-row strong {
+  color: #172334;
+}
+
+html[data-theme="light"] .item small,
+html[data-theme="light"] .order-meta,
+html[data-theme="light"] .order-row .order-meta {
+  color: #65768b;
+}
+
+html[data-theme="light"] .amounts {
+  border-top-color: #e2e8f0;
+  color: #526276;
+}
+
+html[data-theme="light"] .amounts b {
+  color: #172334;
+}
+
+html[data-theme="light"] .amounts .due,
+html[data-theme="light"] .due {
+  color: #c91f36;
+}
+
+html[data-theme="light"] .empty {
+  color: #64748b;
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+
+/* ==========================================================
+   7. ESTADÍSTICAS DE INICIO
+   ========================================================== */
+
+html[data-theme="light"] .stat {
+  background: #ffffff;
+  border-color: #d9e1eb;
+  box-shadow: 0 4px 16px rgba(20, 35, 55, 0.05);
+}
+
+html[data-theme="light"] .stat b {
+  color: #172334;
+}
+
+html[data-theme="light"] .stat small {
+  color: #64748b;
+}
+
+
+/* ==========================================================
+   8. FORMULARIOS
+   ========================================================== */
+
+html[data-theme="light"] input,
+html[data-theme="light"] select,
+html[data-theme="light"] textarea {
+  background: #ffffff;
+  color: #172334;
+  border-color: #cbd5e1;
+}
+
+html[data-theme="light"] input::placeholder,
+html[data-theme="light"] textarea::placeholder {
+  color: #8290a2;
+}
+
+html[data-theme="light"] input:focus,
+html[data-theme="light"] select:focus,
+html[data-theme="light"] textarea:focus {
+  border-color: #d71934;
+  box-shadow: 0 0 0 3px rgba(215, 25, 52, 0.12);
+}
+
+html[data-theme="light"] input:read-only {
+  background: #f1f5f9;
+}
+
+html[data-theme="light"] option {
+  background: #ffffff;
+  color: #172334;
+}
+
+html[data-theme="light"] input[type="checkbox"] {
+  accent-color: #d71934;
+}
+
+
+/* ==========================================================
+   9. TABLA DE CLIENTES
+   ========================================================== */
+
+html[data-theme="light"] .clients-table-wrap {
+  background: #ffffff;
+  border-color: #d9e1eb;
+}
+
+html[data-theme="light"] .clients-table th {
+  background: #e7edf5;
+  color: #27374b;
+}
+
+html[data-theme="light"] .clients-table td {
+  color: #344459;
+  border-top-color: #e0e7ef;
+}
+
+html[data-theme="light"] .clients-table tbody tr:nth-child(even) {
+  background: #f5f8fc;
+}
+
+html[data-theme="light"] .clients-table tbody tr:nth-child(odd) {
+  background: #ffffff;
+}
+
+html[data-theme="light"] .clients-table tbody tr:hover {
+  background: #e9f0fa;
+}
+
+html[data-theme="light"] .clients-name {
+  color: #172334 !important;
+}
+
+html[data-theme="light"] .clients-whatsapp {
+  color: #168b59;
+}
+
+html[data-theme="light"] .clients-sort-button.is-active {
+  color: #ffffff;
+  background: #b91b30;
+  border-color: #cf2337;
+}
+
+
+/* ==========================================================
+   10. TABLA DE MOTOS
+   ========================================================== */
+
+html[data-theme="light"] .motos-table-wrap {
+  background: #ffffff;
+  border-color: #d9e1eb;
+}
+
+html[data-theme="light"] .motos-table th {
+  background: #e7edf5;
+  color: #27374b;
+}
+
+html[data-theme="light"] .motos-table td {
+  color: #344459;
+  border-top-color: #e0e7ef;
+}
+
+html[data-theme="light"] .motos-table tbody tr:nth-child(even) {
+  background: #f5f8fc;
+}
+
+html[data-theme="light"] .motos-table tbody tr:nth-child(odd) {
+  background: #ffffff;
+}
+
+html[data-theme="light"] .motos-table tbody tr:hover {
+  background: #e9f0fa;
+}
+
+html[data-theme="light"] .motos-patente {
+  color: #172334 !important;
+}
+
+html[data-theme="light"] .motos-owner-link {
+  color: #245a9d;
+}
+
+html[data-theme="light"] .motos-owner-link:hover {
+  color: #b91b30;
+  background: transparent;
+}
+
+html[data-theme="light"] .motos-status.activo {
+  background: #dff5e9;
+  color: #126643;
+}
+
+html[data-theme="light"] .motos-status.baja {
+  background: #ffeaed;
+  color: #b91b30;
+}
+
+html[data-theme="light"] .motos-sort-actions .is-active {
+  background: #b91b30;
+  border-color: #cf2337;
+  color: #ffffff;
+}
+
+
+/* ==========================================================
+   11. FICHA DEL CLIENTE
+   ========================================================== */
+
+html[data-theme="light"] .contact-profile {
+  background: #ffffff;
+}
+
+html[data-theme="light"] .contact-avatar {
+  background: #fff0f2;
+  color: #b91b30;
+  border-color: #e9a5af;
+}
+
+html[data-theme="light"] .contact-field,
+html[data-theme="light"] .customer-data>div {
+  background: #f5f8fc;
+  border-color: #dce4ee;
+}
+
+html[data-theme="light"] .contact-field small,
+html[data-theme="light"] .customer-data span {
+  color: #607189;
+}
+
+html[data-theme="light"] .contact-field strong,
+html[data-theme="light"] .customer-data b {
+  color: #172334;
+}
+
+html[data-theme="light"] .customer-note,
+html[data-theme="light"] .payment-note {
+  background: #f5f8fc;
+  color: #526276;
+}
+
+
+/* ==========================================================
+   12. ESTADOS DE LOS TRABAJOS
+   ========================================================== */
+
+html[data-theme="light"] .badge {
+  color: #415267;
+  background: #e8edf4;
+  border-color: #d1dbe7;
+}
+
+html[data-theme="light"] .badge[data-state="Recibida"],
+html[data-theme="light"] .badge[data-state="Diagnosticando"],
+html[data-theme="light"] .badge[data-state="En reparación"] {
+  color: #60409e;
+  background: #eee7fc;
+  border-color: #d8c8f3;
+}
+
+html[data-theme="light"] .badge[data-state="Lista para retirar"],
+html[data-theme="light"] .badge[data-state="Entregada"] {
+  color: #126643;
+  background: #ddf5e8;
+  border-color: #b6e5cb;
+}
+
+html[data-theme="light"] .badge[data-state="Esperando repuestos"] {
+  color: #885c0e;
+  background: #fff0cc;
+  border-color: #efd49b;
+}
+
+html[data-theme="light"] .badge[data-state="Cancelada"] {
+  color: #b91b30;
+  background: #ffe8ec;
+  border-color: #f3c2cb;
+}
+
+
+/* ==========================================================
+   13. CAJA, COBROS Y MOVIMIENTOS
+   ========================================================== */
+
+html[data-theme="light"] .cash-mediums {
+  background: #ffffff;
+}
+
+html[data-theme="light"] .cash-medium-list>div {
+  background: #f5f8fc;
+  border-color: #dce4ee;
+  color: #526276;
+}
+
+html[data-theme="light"] .cash-medium-list b {
+  color: #172334;
+}
+
+html[data-theme="light"] .cash-stat small,
+html[data-theme="light"] .cash-stat span,
+html[data-theme="light"] .cash-row-meta {
+  color: #64748b;
+}
+
+html[data-theme="light"] .cash-stat.income b,
+html[data-theme="light"] .positive {
+  color: #168b59;
+}
+
+html[data-theme="light"] .cash-stat.expense b,
+html[data-theme="light"] .negative {
+  color: #c91f36;
+}
+
+html[data-theme="light"] .cash-stat.net b {
+  color: #172334;
+}
+
+html[data-theme="light"] .cash-payment,
+html[data-theme="light"] .payment-method {
+  color: #245a9d;
+  background: #e5efff;
+  border-color: #c5d9f5;
+}
+
+html[data-theme="light"] .payment-details {
+  color: #64748b;
+  border-top-color: #e2e8f0;
+}
+
+html[data-theme="light"] .payment-details b {
+  color: #172334;
+}
+
+
+/* ==========================================================
+   14. INGRESO RÁPIDO Y GUIADO
+   ========================================================== */
+
+html[data-theme="light"] .intake-panel,
+html[data-theme="light"] .intake-options button,
+html[data-theme="light"] .intake-jobs>div,
+html[data-theme="light"] .intake-summary p {
+  color: #172334;
+  background: #ffffff;
+  border-color: #d9e1eb;
+}
+
+html[data-theme="light"] .intake-options button.selected {
+  color: #a9142b;
+  background: #fff0f2;
+  border-color: #d71934;
+}
+
+html[data-theme="light"] .intake-options small {
+  color: #64748b;
+}
+
+html[data-theme="light"] .intake-progress button {
+  color: #526276;
+  background: #e7edf5;
+  border-color: #cbd5e1;
+}
+
+html[data-theme="light"] .intake-progress button.active {
+  color: #ffffff;
+  background: #b91b30;
+  border-color: #cf2337;
+}
+
+html[data-theme="light"] .intake-progress button.done {
+  color: #126643;
+  background: #e1f4e9;
+  border-color: #8dcfae;
+}
+
+html[data-theme="light"] .intake-progress button span {
+  color: #ffffff;
+  background: #64748b;
+}
+
+html[data-theme="light"] .intake-progress button.active span {
+  background: #8d1123;
+}
+
+html[data-theme="light"] .intake-progress button.done span {
+  background: #168b59;
+}
+
+html[data-theme="light"] .intake-previews>div {
+  background: #ffffff;
+  border-color: #d9e1eb;
+}
+
+
+/* ==========================================================
+   15. VENTANAS MODALES
+   ========================================================== */
+
+html[data-theme="light"] .app-modal-overlay {
+  background: rgba(30, 42, 60, 0.42);
+}
+
+html[data-theme="light"] .app-modal {
+  color: #172334;
+  background: #ffffff;
+  border-color: #d1dbe7;
+  box-shadow: 0 24px 70px rgba(20, 35, 55, 0.2);
+}
+
+html[data-theme="light"] .app-modal p {
+  color: #526276;
+}
+
+html[data-theme="light"] .app-modal.is-danger {
+  border-color: #dc8291;
+}
+
+html[data-theme="light"] .wa-modal-section {
+  background: #f5f8fc;
+  border-color: #dce4ee;
+}
+
+html[data-theme="light"] .wa-modal-section h3 {
+  color: #172334;
+}
+
+
+/* ==========================================================
+   16. FOTOGRAFÍAS
+   ========================================================== */
+
+html[data-theme="light"] .photo-card {
+  background: #ffffff;
+  border-color: #d9e1eb;
+}
+
+html[data-theme="light"] .photo-thumb {
+  background: #edf2f7;
+  border-color: #d9e1eb;
+}
+
+html[data-theme="light"] .photo-caption {
+  color: #526276;
+}
+
+html[data-theme="light"] .photo-caption b {
+  color: #172334;
+}
+
+html[data-theme="light"] .photo-empty {
+  color: #64748b;
+  border-color: #cbd5e1;
+}
+
+html[data-theme="light"] .photo-loading {
+  color: #64748b;
+}
+
+html[data-theme="light"] .photo-error {
+  color: #b91b30;
+}
+
+
+/* ==========================================================
+   17. LOADING Y NOTIFICACIONES
+   ========================================================== */
+
+html[data-theme="light"] .loading-state {
+  color: #64748b;
+}
+
+html[data-theme="light"] .spinner {
+  border-color: #d9e1eb;
+  border-top-color: #d71934;
+}
+
+html[data-theme="light"] #notice {
+  color: #172334;
+  background: #ffffff;
+  border-color: #d9e1eb;
+  border-left-color: #d71934;
+  box-shadow: 0 12px 35px rgba(20, 35, 55, 0.16);
+}
+
+html[data-theme="light"] .load-metric:not(:empty) {
+  color: #526276;
+  background: #edf2f7;
+  border-color: #d9e1eb;
+}
+
+
+/* ==========================================================
+   18. WHATSAPP
+   Mantener verde normalmente y rojo al pasar el mouse.
+   ========================================================== */
+
+html[data-theme="light"] button[data-contact-whatsapp],
+html[data-theme="light"] button[data-moto-whatsapp],
+html[data-theme="light"] button[data-order-whatsapp],
+html[data-theme="light"] #customerWhatsAppButton {
+  background: #168b59 !important;
+  color: #ffffff !important;
+  border-color: #39b978 !important;
+}
+
+html[data-theme="light"] button[data-contact-whatsapp]:not(:disabled):hover,
+html[data-theme="light"] button[data-moto-whatsapp]:not(:disabled):hover,
+html[data-theme="light"] button[data-order-whatsapp]:not(:disabled):hover,
+html[data-theme="light"] #customerWhatsAppButton:not(:disabled):hover {
+  background: #d71934 !important;
+  color: #ffffff !important;
+  border-color: #f24858 !important;
+}
+
+
+/* ==========================================================
+   19. PANTALLAS PEQUEÑAS
+   ========================================================== */
+
+@media (max-width: 540px) {
+
+  .theme-toggle {
+    min-width: 39px;
+    padding: 7px 9px;
+  }
+
+  .theme-toggle .theme-toggle-icon {
+    display: inline-block !important;
+    font-size: 20px;
+    margin: 0;
+  }
+
+  .theme-toggle .theme-toggle-label {
+    display: none !important;
+  }
+
+  html[data-theme="light"] .topbar {
+    background: #ffffff;
+  }
+}
