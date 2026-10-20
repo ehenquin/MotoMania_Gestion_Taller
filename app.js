@@ -23,21 +23,16 @@ const state = {
   photoRequests: new Map(),
   galleryAbortController: null,
   cashFilter: { period: "month", start: "", end: "" },
+  orderFilter: "",
+  quick: null,
 };
 const PHOTO_GALLERY_CONCURRENCY = 3;
 const PHOTO_SOURCE_CACHE_LIMIT = 24;
 const defs = {
   Clientes: {
     title: "Clientes",
-    fields: [
-      "Nombre",
-      "Telefono",
-      "WhatsApp",
-      "DNI",
-      "Domicilio",
-      "Observaciones",
-    ],
-    required: ["Nombre", "Telefono"],
+    fields: ["Nombre", "WhatsApp", "DNI", "Domicilio", "Observaciones"],
+    required: ["Nombre"],
   },
   Motos: {
     title: "Motos",
@@ -334,7 +329,7 @@ async function load() {
       Repuestos: Array.isArray(db?.Repuestos) ? db.Repuestos : [],
     };
     $("#summary").textContent =
-      `${state.db.Clientes.length} clientes · ${state.db.Motos.length} motos · ${state.db.Ordenes_Trabajo.length} órdenes`;
+      `${state.db.Clientes.length} clientes · ${state.db.Motos.filter(motoIsActive).length} motos activas · ${state.db.Ordenes_Trabajo.length} órdenes`;
     render();
     const elapsed = performance.now() - started;
     $("#loadMetric").textContent =
@@ -412,7 +407,23 @@ $("#nav").onclick = async (e) => {
       });
       if (!leave) return;
     }
+    if (state.view === "quickIntake" && state.quick) {
+      if (state.quick.saving)
+        return toast("Esperá que termine de guardarse el ingreso.");
+      quickCapture();
+      const leave = await confirmModal({
+        title: "¿Salir del ingreso sin guardar?",
+        message:
+          "Se descartarán los datos de este ingreso rápido que todavía no fueron guardados.",
+        cancelText: "Seguir con el ingreso",
+        confirmText: "Salir sin guardar",
+        danger: true,
+      });
+      if (!leave) return;
+      state.quick = null;
+    }
     state.view = b.dataset.view;
+    state.orderFilter = "";
     document.querySelector(".nav-more")?.removeAttribute("open");
     render();
   }
@@ -522,13 +533,341 @@ async function changeOrderStage(id, nextStage) {
   await withSession(async () => {
     const record = { IDOrden: id, Estado: nextStage };
     if (nextStage === "Entregada" && !current.FechaEntrega)
-      record.FechaEntrega = new Date().toISOString().slice(0, 10);
-    await api("save", { table: "Ordenes_Trabajo", record });
+      record.FechaEntrega = localToday();
+    const saved = await api("save", { table: "Ordenes_Trabajo", record });
+    updateDbRecord("Ordenes_Trabajo", saved, "IDOrden");
+    await synchronizeAfterSave();
     toast("Estado actualizado correctamente.");
-    await load();
     orderDetail(id);
   });
 }
+
+/* =========================================================
+   MOTOMANIA - WHATSAPP DESDE CLIENTES Y MOTOS
+   Permite presupuesto por orden o mensaje libre.
+   ========================================================= */
+
+function openContactWhatsApp(clientId, motoId = "") {
+  const customer = (state.db.Clientes || []).find(
+    (c) => String(c.IDCliente) === String(clientId),
+  );
+
+  if (!customer) {
+    toast("No se encontró el cliente.");
+    return;
+  }
+
+  const numero =
+    normalizeWhatsApp(customer.WhatsApp) ||
+    normalizeWhatsApp(customer.Telefono, true);
+
+  if (!numero) {
+    toast("Este cliente no tiene un WhatsApp válido.");
+    return;
+  }
+
+  // Órdenes relacionadas con el cliente o con la moto elegida.
+  const motosCliente = (state.db.Motos || []).filter(
+    (m) => String(m.IDCliente) === String(clientId),
+  );
+
+  const motosPermitidas = new Set(
+    motosCliente
+      .filter((m) => !motoId || String(m.IDMoto) === String(motoId))
+      .map((m) => String(m.IDMoto)),
+  );
+
+  const ordenes = (state.db.Ordenes_Trabajo || [])
+    .filter((o) => motosPermitidas.has(String(o.IDMoto)))
+    .sort((a, b) => {
+      const f = String(b.FechaIngreso || "").localeCompare(
+        String(a.FechaIngreso || ""),
+      );
+      return f || String(b.IDOrden).localeCompare(String(a.IDOrden));
+    });
+
+  const overlay = document.createElement("div");
+  overlay.className = "app-modal-overlay";
+
+  const modal = document.createElement("section");
+  modal.className = "app-modal wa-order-modal";
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  modal.setAttribute("aria-label", "WhatsApp del cliente");
+
+  modal.innerHTML = `
+    <h2>WhatsApp</h2>
+
+    <p><strong>${esc(customer.Nombre)}</strong></p>
+
+    <div class="wa-modal-section">
+      <h3>Enviar presupuesto</h3>
+
+      ${
+        ordenes.length
+          ? `
+            <label>
+              Seleccionar trabajo
+              <select id="waContactOrder">
+                ${ordenes
+                  .map((o) => {
+                    const m = motosCliente.find(
+                      (x) => String(x.IDMoto) === String(o.IDMoto),
+                    );
+
+                    const descripcion = [
+                      argentinaDate(o.FechaIngreso),
+                      m?.Patente || "Sin patente",
+                      m?.Marca || "",
+                      m?.Modelo || "",
+                      o.Problema || "",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ");
+
+                    return `
+                    <option value="${esc(o.IDOrden)}">
+                      ${esc(descripcion)}
+                    </option>
+                  `;
+                  })
+                  .join("")}
+              </select>
+            </label>
+
+            <button type="button" id="waContactBudget">
+              Enviar presupuesto
+            </button>
+          `
+          : `
+            <p>Este cliente o moto todavía no tiene trabajos registrados.</p>
+          `
+      }
+    </div>
+
+    <div class="wa-modal-section">
+      <h3>Otro mensaje</h3>
+
+      <label>
+        Mensaje
+        <textarea
+          id="waContactMessage"
+          placeholder="Hola, te escribo de MOTOMANÍA..."
+          rows="4"
+        ></textarea>
+      </label>
+
+      <button type="button" id="waContactCustom">
+        Abrir WhatsApp
+      </button>
+    </div>
+
+    <div class="app-modal-actions">
+      <button type="button" class="ghost" id="waContactCancel">
+        Cancelar
+      </button>
+    </div>
+  `;
+
+  overlay.append(modal);
+
+  const cerrar = () => {
+    document.removeEventListener("keydown", onKeyDown);
+    overlay.remove();
+
+    if (!document.querySelector(".app-modal-overlay")) {
+      document.body.classList.remove("modal-open");
+    }
+  };
+
+  const onKeyDown = (event) => {
+    if (event.key === "Escape") cerrar();
+  };
+
+  modal.querySelector("#waContactCancel").onclick = cerrar;
+
+  overlay.addEventListener("mousedown", (event) => {
+    if (event.target === overlay) cerrar();
+  });
+
+  // PRESUPUESTO: reutiliza la función que ya funciona.
+  const budgetButton = modal.querySelector("#waContactBudget");
+
+  if (budgetButton) {
+    budgetButton.onclick = () => {
+      const orderId = modal.querySelector("#waContactOrder").value;
+
+      if (!orderId) return;
+
+      const conceptos = (state.db.Detalle_Trabajo || []).filter(
+        (x) => String(x.IDOrden) === String(orderId),
+      );
+
+      if (!conceptos.length) {
+        toast("Este trabajo todavía no tiene conceptos presupuestados.");
+        return;
+      }
+
+      // Se abre desde el clic para evitar bloqueos de ventanas.
+      budgetWhatsApp(orderId);
+      cerrar();
+    };
+  }
+
+  // MENSAJE LIBRE: funciona aunque no existan trabajos.
+  modal.querySelector("#waContactCustom").onclick = () => {
+    const mensaje = modal.querySelector("#waContactMessage").value.trim();
+
+    const url = mensaje
+      ? `https://wa.me/${numero}?text=${encodeURIComponent(mensaje)}`
+      : `https://wa.me/${numero}`;
+
+    window.open(url, "_blank", "noopener");
+    cerrar();
+  };
+
+  document.body.append(overlay);
+  document.body.classList.add("modal-open");
+  document.addEventListener("keydown", onKeyDown);
+
+  (
+    modal.querySelector("#waContactBudget") ||
+    modal.querySelector("#waContactMessage")
+  ).focus();
+}
+
+/* =========================================================
+   MOTOMANIA - WHATSAPP POR ORDEN DE TRABAJO
+   Presupuesto automático o mensaje personalizado
+   ========================================================= */
+
+function openOrderWhatsApp(id) {
+  const { order, bike, client, items } = orderContext(id);
+
+  if (!order || !bike || !client) {
+    toast("No se encontraron los datos del trabajo.");
+    return;
+  }
+
+  const numero =
+    normalizeWhatsApp(client.WhatsApp) ||
+    normalizeWhatsApp(client.Telefono, true);
+
+  if (!numero) {
+    toast("Este cliente no tiene un WhatsApp válido.");
+    return;
+  }
+
+  const overlay = document.createElement("div");
+  overlay.className = "app-modal-overlay";
+
+  const modal = document.createElement("section");
+  modal.className = "app-modal wa-order-modal";
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  modal.setAttribute("aria-label", "Enviar WhatsApp");
+
+  modal.innerHTML = `
+    <h2>WhatsApp del trabajo</h2>
+
+    <p>
+      <strong>${esc(client.Nombre)}</strong><br>
+      ${esc(bike.Patente)} ·
+      ${esc(bike.Marca)} ${esc(bike.Modelo)}
+    </p>
+
+    <div class="wa-modal-section">
+      <h3>Presupuesto</h3>
+      <p>
+        Envía los trabajos, repuestos y el importe total
+        del presupuesto cargado.
+      </p>
+
+      <button type="button" id="waSendBudget">
+        Enviar presupuesto
+      </button>
+    </div>
+
+    <div class="wa-modal-section">
+      <h3>Otro mensaje</h3>
+
+      <label for="waCustomMessage">
+        Escribí el mensaje
+      </label>
+
+      <textarea
+        id="waCustomMessage"
+        rows="4"
+        placeholder="Hola, te escribo de MOTOMANÍA para avisarte que..."
+      ></textarea>
+
+      <button type="button" id="waSendCustom">
+        Abrir WhatsApp
+      </button>
+    </div>
+
+    <div class="app-modal-actions">
+      <button type="button" class="ghost" id="waCancel">
+        Cancelar
+      </button>
+    </div>
+  `;
+
+  overlay.appendChild(modal);
+
+  const onKeyDown = (event) => {
+    if (event.key === "Escape") {
+      cerrar();
+    }
+  };
+
+  function cerrar() {
+    document.removeEventListener("keydown", onKeyDown);
+    overlay.remove();
+    if (!document.querySelector(".app-modal-overlay")) {
+      document.body.classList.remove("modal-open");
+    }
+  }
+
+  overlay.addEventListener("mousedown", (event) => {
+    if (event.target === overlay) cerrar();
+  });
+
+  modal.querySelector("#waCancel").onclick = cerrar;
+
+  // OPCION 1: PRESUPUESTO AUTOMATICO
+  modal.querySelector("#waSendBudget").onclick = () => {
+    if (!items.length) {
+      toast("Primero cargá los trabajos o repuestos del presupuesto.");
+      return;
+    }
+
+    cerrar();
+
+    // Reutiliza la función existente.
+    budgetWhatsApp(id);
+  };
+
+  // OPCION 2: MENSAJE LIBRE
+  modal.querySelector("#waSendCustom").onclick = () => {
+    const mensaje = modal.querySelector("#waCustomMessage").value.trim();
+
+    const url = mensaje
+      ? `https://wa.me/${numero}?text=${encodeURIComponent(mensaje)}`
+      : `https://wa.me/${numero}`;
+
+    window.open(url, "_blank", "noopener");
+
+    cerrar();
+  };
+
+  document.body.appendChild(overlay);
+  document.body.classList.add("modal-open");
+  document.addEventListener("keydown", onKeyDown);
+
+  modal.querySelector("#waSendBudget").focus();
+}
+
 function budgetWhatsApp(id) {
   const { order, bike, client, items, totals: summary } = orderContext(id);
   if (!order || !bike || !client)
@@ -589,17 +928,68 @@ function render() {
       b.classList.toggle("active", b.dataset.view === state.view),
     );
   if (state.view === "dashboard") return dashboard();
+  if (state.view === "quickIntake" && state.quick)
+    return renderQuickIntake(false);
   if (state.view === "intake" && state.intake) return renderIntake();
   if (state.view === "Caja") return cashDashboard();
   list(state.view);
 }
 function dashboard() {
-  const os = state.db.Ordenes_Trabajo || [];
-  const open = os.filter((o) => !["Entregada", "Cancelada"].includes(o.Estado));
-  $("#content").innerHTML =
-    `<div class="stats"><div class="stat"><span class="stat-icon">🏍</span><b>${open.length}</b><small>Motos en taller</small></div><div class="stat"><span class="stat-icon">✓</span><b>${os.filter((o) => o.Estado === "Lista para retirar").length}</b><small>Listas para retirar</small></div><div class="stat"><span class="stat-icon">◷</span><b>${os.filter((o) => o.Estado === "Esperando repuestos").length}</b><small>Esperando repuestos</small></div><div class="stat"><span class="stat-icon">♙</span><b>${state.db.Clientes.length}</b><small>Clientes registrados</small></div></div><div class="toolbar"><div><h2>Trabajos activos</h2><p class="muted">Seguimiento en tiempo real de las reparaciones.</p></div><div class="intake-dashboard-actions"><button data-intake="new">+ NUEVO INGRESO</button>${loadIntakeDraft() ? '<button class="ghost" data-intake="draft">Continuar borrador</button><button class="ghost" data-intake-discard>Descartar borrador</button>' : ""}</div></div><div class="list">${open.map((o) => orderCard(o)).join("") || '<div class="empty">No hay trabajos activos en este momento.</div>'}</div>`;
+  const orders = state.db.Ordenes_Trabajo || [];
+  const opened = orders.filter(
+    (order) => !["Entregada", "Cancelada"].includes(order.Estado),
+  );
+  const ready = orders.filter((order) => order.Estado === "Lista para retirar");
+  const awaiting = orders.filter(
+    (order) => order.Estado === "Esperando repuestos",
+  );
+  const indicators = [
+    {
+      icon: "🏍",
+      label: "Trabajos abiertos",
+      number: opened.length,
+      filter: "open",
+    },
+    {
+      icon: "✓",
+      label: "Listas para retirar",
+      number: ready.length,
+      filter: "ready",
+    },
+    {
+      icon: "◷",
+      label: "Esperando repuestos",
+      number: awaiting.length,
+      filter: "parts",
+    },
+    {
+      icon: "♙",
+      label: "Clientes registrados",
+      number: state.db.Clientes.length,
+      filter: "clients",
+    },
+  ];
+  $("#content").innerHTML = `
+    <div class="toolbar dashboard-header">
+      <div><h2>Panel del taller</h2><p class="muted">Tocá un indicador para ver sus registros.</p></div>
+      <div class="intake-dashboard-actions">
+        <button data-quick-new>+ INGRESAR MOTO Y TRABAJO</button>
+        ${loadIntakeDraft() ? '<button class="ghost" data-intake="draft">Continuar borrador anterior</button>' : ""}
+      </div>
+    </div>
+    <div class="stats dashboard-stats">${indicators
+      .map(
+        (item) => `
+      <button type="button" class="stat stat-action" data-indicator="${item.filter}">
+        <span class="stat-icon" aria-hidden="true">${item.icon}</span>
+        <b>${item.number}</b><small>${item.label}</small><span class="stat-open">Ver registros →</span>
+      </button>`,
+      )
+      .join("")}</div>
+    `;
   wire();
 }
+
 function cashDate(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
@@ -931,7 +1321,7 @@ function renderIntake(capture = true) {
         [x.Nombre, x.DNI, x.Telefono].join(" ").toLowerCase().includes(q),
       )
       .slice(0, 8);
-    body = `<div class="fields"><label>Buscar cliente<input id="intakeClientSearch" value="${esc(i.clientQuery || "")}" placeholder="Nombre, DNI o teléfono"></label><label>Opción<select id="intakeClientMode"><option value="existing" ${i.clientMode === "existing" ? "selected" : ""}>Cliente existente</option><option value="new" ${i.clientMode === "new" ? "selected" : ""}>Nuevo cliente</option></select></label></div>${i.clientMode === "existing" ? `<div class="intake-options">${matches.map((x) => `<button type="button" class="${i.clientId === x.IDCliente ? "selected" : ""}" data-intake-client="${esc(x.IDCliente)}"><b>${esc(x.Nombre)}</b><small>${esc(x.Telefono || x.DNI || "Sin contacto")}</small></button>`).join("") || '<p class="muted">Buscá o registrá un cliente nuevo.</p>'}</div>` : `<div class="fields"><label>Nombre<input data-intake-client-field="Nombre" value="${esc(i.client.Nombre || "")}" required></label><label>Teléfono<input data-intake-client-field="Telefono" value="${esc(i.client.Telefono || "")}" required></label><label>WhatsApp<input data-intake-client-field="WhatsApp" value="${esc(i.client.WhatsApp || "")}"></label><label>DNI<input data-intake-client-field="DNI" value="${esc(i.client.DNI || "")}"></label><label>Domicilio<input data-intake-client-field="Domicilio" value="${esc(i.client.Domicilio || "")}"></label><label>Observaciones<textarea data-intake-client-field="Observaciones">${esc(i.client.Observaciones || "")}</textarea></label></div>`}`;
+    body = `<div class="fields"><label>Buscar cliente<input id="intakeClientSearch" value="${esc(i.clientQuery || "")}" placeholder="Nombre, DNI o teléfono"></label><label>Opción<select id="intakeClientMode"><option value="existing" ${i.clientMode === "existing" ? "selected" : ""}>Cliente existente</option><option value="new" ${i.clientMode === "new" ? "selected" : ""}>Nuevo cliente</option></select></label></div>${i.clientMode === "existing" ? `<div class="intake-options">${matches.map((x) => `<button type="button" class="${i.clientId === x.IDCliente ? "selected" : ""}" data-intake-client="${esc(x.IDCliente)}"><b>${esc(x.Nombre)}</b><small>${esc(x.Telefono || x.DNI || "Sin contacto")}</small></button>`).join("") || '<p class="muted">Buscá o registrá un cliente nuevo.</p>'}</div>` : `<div class="fields"><label>Nombre<input data-intake-client-field="Nombre" value="${esc(i.client.Nombre || "")}" required></label><label>WhatsApp *<input data-intake-client-field="WhatsApp" value="${esc(i.client.WhatsApp || "")}" required></label><label>DNI<input data-intake-client-field="DNI" value="${esc(i.client.DNI || "")}"></label><label>Domicilio<input data-intake-client-field="Domicilio" value="${esc(i.client.Domicilio || "")}"></label><label>Observaciones<textarea data-intake-client-field="Observaciones">${esc(i.client.Observaciones || "")}</textarea></label></div>`}`;
   } else if (i.step === 2) {
     const bikes = client?.IDCliente
       ? (state.db.Motos || []).filter((x) => x.IDCliente === client.IDCliente)
@@ -1043,7 +1433,7 @@ function validIntakeStep() {
     i.step === 1 &&
     (i.clientMode === "existing"
       ? !i.clientId
-      : !i.client.Nombre.trim() || !i.client.Telefono.trim())
+      : !i.client.Nombre.trim() || !i.client.WhatsApp?.trim())
   )
     return "Seleccioná o completá un cliente.";
   if (
@@ -1255,7 +1645,7 @@ function applyIntakeResult(result) {
   );
   upsert("Pagos", result.payment, "IDPago");
   $("#summary").textContent =
-    `${state.db.Clientes.length} clientes · ${state.db.Motos.length} motos · ${state.db.Ordenes_Trabajo.length} órdenes`;
+    `${state.db.Clientes.length} clientes · ${state.db.Motos.filter(motoIsActive).length} motos activas · ${state.db.Ordenes_Trabajo.length} órdenes`;
 }
 function uploadKey(prefix = "photo") {
   const unique = crypto.randomUUID
@@ -1357,7 +1747,15 @@ async function confirmIntake() {
       const result = await api("saveIntake", {
         intakeId: intake.id,
         clientId: intake.clientId || "",
-        client: intake.clientId ? null : intake.client,
+        client: intake.clientId
+          ? null
+          : {
+              ...intake.client,
+              Telefono:
+                intake.client.WhatsApp?.trim() ||
+                intake.client.Telefono?.trim() ||
+                "",
+            },
         motoId: intake.motoId || "",
         moto: intake.motoId ? null : intake.moto,
         order: { ...intake.reception, Estado: "Recibida" },
@@ -1433,27 +1831,504 @@ async function confirmIntake() {
     }
   }
 }
+function updateDbRecord(table, record, key) {
+  if (!record) return;
+  const rows = state.db[table] || (state.db[table] = []);
+  const index = rows.findIndex((row) => row[key] === record[key]);
+  if (index >= 0) rows[index] = { ...rows[index], ...record };
+  else rows.push(record);
+}
+async function synchronizeAfterSave() {
+  try {
+    await load();
+  } catch (error) {
+    console.error(
+      "[MOTOMANÍA] Registro guardado, error de sincronización",
+      error,
+    );
+    toast(
+      "El registro SE GUARDÓ, pero falló la actualización de pantalla. Revisá la conexión; no vuelvas a guardarlo.",
+    );
+  }
+}
+
+// ================================================================
+// INGRESO RÁPIDO: cliente + moto + orden + conceptos, sin búsquedas
+// intermedias. Utiliza saveIntake existente y su protección por intakeId.
+// ================================================================
+function localToday() {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+function recordBike(id) {
+  return (state.db.Motos || []).find(
+    (row) => String(row.IDMoto) === String(id),
+  );
+}
+function activeClientBikes(clientId) {
+  return (state.db.Motos || []).filter(
+    (bike) => String(bike.IDCliente) === String(clientId) && motoIsActive(bike),
+  );
+}
+function safeQuickId() {
+  return (
+    globalThis.crypto?.randomUUID?.() ||
+    `ingreso_${Date.now()}_${Math.random().toString(36).slice(2)}`
+  );
+}
+function openQuickIntake({ clientId = "", motoId = "" } = {}) {
+  const bike = motoId ? recordBike(motoId) : null;
+  if (bike && !motoIsActive(bike))
+    return toast(
+      "Esta moto está dada de baja. Reactivala antes de registrar otro trabajo.",
+    );
+  const selectedClientId = bike?.IDCliente || clientId;
+  state.quick = {
+    id: safeQuickId(),
+    clientId: selectedClientId,
+    clientMode: selectedClientId ? "existing" : "existing",
+    clientQuery: selectedClientId ? cliente(selectedClientId) : "",
+    client: {
+      Nombre: "",
+      WhatsApp: "",
+      DNI: "",
+      Domicilio: "",
+      Observaciones: "",
+    },
+    motoId: motoId || "",
+    motoMode: motoId
+      ? "existing"
+      : selectedClientId && !activeClientBikes(selectedClientId).length
+        ? "new"
+        : "existing",
+    moto: {
+      Patente: "",
+      Marca: "",
+      Modelo: "",
+      Cilindrada: "",
+      Anio: "",
+      Color: "",
+      Chasis: "",
+      Observaciones: "",
+    },
+    order: {
+      FechaIngreso: localToday(),
+      Kilometraje: "",
+      Problema: "",
+      Diagnostico: "",
+      FechaPrometida: "",
+      Observaciones: "",
+      Descuento: "",
+    },
+    jobs: [],
+    saving: false,
+  };
+  state.view = "quickIntake";
+  render();
+}
+function quickCapture() {
+  const q = state.quick;
+  if (!q) return;
+  document.querySelectorAll("[data-quick-client-field]").forEach((el) => {
+    q.client[el.dataset.quickClientField] = el.value;
+  });
+  document.querySelectorAll("[data-quick-moto-field]").forEach((el) => {
+    q.moto[el.dataset.quickMotoField] = el.value;
+  });
+  document.querySelectorAll("[data-quick-order-field]").forEach((el) => {
+    q.order[el.dataset.quickOrderField] = el.value;
+  });
+  if ($("#quickClientSearch")) q.clientQuery = $("#quickClientSearch").value;
+}
+function quickClientSuggestions() {
+  const q = state.quick;
+  const normalized = normalizeSearch(q.clientQuery);
+  const customers = (state.db.Clientes || [])
+    .filter(
+      (client) =>
+        !normalized ||
+        searchableRecord("Clientes", client).includes(normalized),
+    )
+    .slice(0, 12);
+  return (
+    customers
+      .map(
+        (client) =>
+          `<button type="button" class="quick-choice ${q.clientId === client.IDCliente ? "selected" : ""}" data-quick-client="${esc(client.IDCliente)}"><b>${esc(client.Nombre)}</b><small>${esc(client.WhatsApp || client.Telefono || "Sin WhatsApp")} · ${activeClientBikes(client.IDCliente).length} motos activas</small></button>`,
+      )
+      .join("") ||
+    '<p class="muted">No se encontró el cliente. Podés elegir «Nuevo cliente».</p>'
+  );
+}
+function quickMotoChoices() {
+  const q = state.quick;
+  const bikes = activeClientBikes(q.clientId);
+  return (
+    bikes
+      .map(
+        (bike) =>
+          `<button type="button" class="quick-choice ${q.motoId === bike.IDMoto ? "selected" : ""}" data-quick-moto="${esc(bike.IDMoto)}"><b>${esc([bike.Patente, bike.Marca, bike.Modelo].filter(Boolean).join(" · "))}</b></button>`,
+      )
+      .join("") ||
+    '<p class="muted">Este cliente no tiene motos activas. Elegí «Nueva moto».</p>'
+  );
+}
+function renderQuickIntake(capture = true) {
+  if (capture) quickCapture();
+  const q = state.quick;
+  if (!q) return dashboard();
+  const customer = (state.db.Clientes || []).find(
+    (c) => c.IDCliente === q.clientId,
+  );
+  const bike = recordBike(q.motoId);
+  const catalog = intakeCatalog();
+  const total = Math.max(
+    0,
+    q.jobs.reduce(
+      (sum, job) => sum + Number(job.Cantidad) * Number(job.PrecioUnitario),
+      0,
+    ) - Number(q.order.Descuento || 0),
+  );
+  $("#content").innerHTML = `
+    <div class="toolbar"><div><h2>🏍 Ingreso rápido</h2><p class="muted">Cliente → Moto → Trabajo y precio. Todo desde acá.</p></div><button id="quickBack" class="ghost" type="button">← Salir</button></div>
+    <section class="panel quick-section"><div class="quick-section-head"><span class="quick-step">1</span><div><h2>Cliente</h2><p class="muted">Buscá uno existente o registrá uno nuevo.</p></div></div>
+      <div class="quick-tabs"><button type="button" data-quick-client-mode="existing" class="${q.clientMode === "existing" ? "selected" : "ghost"}">Cliente existente</button><button type="button" data-quick-client-mode="new" class="${q.clientMode === "new" ? "selected" : "ghost"}">+ Nuevo cliente</button></div>
+      ${q.clientMode === "existing" ? `<label>Buscar por nombre, WhatsApp o patente<input id="quickClientSearch" placeholder="Ej.: Eduardo, 3424, ABC123" value="${esc(q.clientQuery)}" autocomplete="off"></label><div id="quickClientOptions" class="quick-options">${quickClientSuggestions()}</div>${customer ? `<p class="quick-selected">✓ Cliente seleccionado: <b>${esc(customer.Nombre)}</b></p>` : ""}` : `<div class="fields"><label>Nombre *<input data-quick-client-field="Nombre" value="${esc(q.client.Nombre)}" autocomplete="name"></label><label>WhatsApp *<input data-quick-client-field="WhatsApp" type="tel" value="${esc(q.client.WhatsApp)}" inputmode="tel" placeholder="3424..."></label><label>DNI<input data-quick-client-field="DNI" value="${esc(q.client.DNI)}"></label><label>Domicilio<input data-quick-client-field="Domicilio" value="${esc(q.client.Domicilio)}"></label><label>Observaciones<textarea data-quick-client-field="Observaciones">${esc(q.client.Observaciones)}</textarea></label></div>`}
+    </section>
+    <section class="panel quick-section"><div class="quick-section-head"><span class="quick-step">2</span><div><h2>Moto</h2><p class="muted">Queda asociada automáticamente al cliente seleccionado.</p></div></div>
+      ${
+        q.clientMode === "existing" && !q.clientId
+          ? '<p class="muted">Seleccioná primero un cliente en el punto 1.</p>'
+          : `<div class="quick-tabs"><button type="button" data-quick-moto-mode="existing" class="${q.motoMode === "existing" ? "selected" : "ghost"}" ${q.clientMode === "new" ? "disabled" : ""}>Moto existente</button><button type="button" data-quick-moto-mode="new" class="${q.motoMode === "new" ? "selected" : "ghost"}">+ Nueva moto</button></div>
+      ${q.motoMode === "existing" && q.clientMode === "existing" ? `<div class="quick-options">${quickMotoChoices()}</div>${bike ? `<p class="quick-selected">✓ Moto seleccionada: <b>${esc([bike.Patente, bike.Marca, bike.Modelo].join(" · "))}</b></p>` : ""}` : `<div class="fields">${["Patente", "Marca", "Modelo", "Cilindrada", "Anio", "Color", "Chasis", "Observaciones"].map((field) => `<label>${field}${["Patente", "Marca", "Modelo"].includes(field) ? " *" : ""}<input data-quick-moto-field="${field}" value="${esc(q.moto[field])}" ${["Cilindrada", "Anio"].includes(field) ? 'type="number" min="0"' : 'type="text"'}></label>`).join("")}</div>`}`
+      }
+    </section>
+    <section class="panel quick-section"><div class="quick-section-head"><span class="quick-step">3</span><div><h2>Trabajo y presupuesto</h2><p class="muted">Cargá el problema, servicios, repuestos y precios antes de guardar.</p></div></div>
+      <div class="fields quick-order-fields"><label>Fecha de ingreso<input type="date" data-quick-order-field="FechaIngreso" value="${esc(q.order.FechaIngreso)}"></label><label>Kilometraje<input type="number" min="0" data-quick-order-field="Kilometraje" value="${esc(q.order.Kilometraje)}"></label><label>Problema informado *<textarea data-quick-order-field="Problema">${esc(q.order.Problema)}</textarea></label><label>Diagnóstico (opcional)<textarea data-quick-order-field="Diagnostico">${esc(q.order.Diagnostico)}</textarea></label><label>Fecha prometida (opcional)<input type="date" data-quick-order-field="FechaPrometida" value="${esc(q.order.FechaPrometida)}"></label><label>Observaciones<textarea data-quick-order-field="Observaciones">${esc(q.order.Observaciones)}</textarea></label></div>
+      <h3>Servicios y repuestos</h3>
+      <div class="quick-concept-editor"><label>Tipo<select id="quickJobType"><option>Servicio</option><option>Repuesto</option></select></label><label>Descripción<input id="quickJobDescription" placeholder="Ej.: cambio de aceite"></label><label>Cantidad<input id="quickJobQty" type="number" min="0.01" step="any" value="1"></label><label>Precio unitario ($)<input id="quickJobPrice" type="number" min="0" step="any" placeholder="0"></label><button id="quickAddJob" type="button">+ Agregar concepto</button></div>
+      ${catalog.length ? `<label class="quick-catalog-label">Cargar desde servicios y repuestos<select id="quickCatalog"><option value="">Opcional: elegir un concepto habitual…</option>${catalog.map((c, i) => `<option value="${i}">${esc(c.type)} · ${esc(c.name)} — ${money(Number(c.price || 0))}</option>`).join("")}</select></label>` : ""}
+      <div class="quick-jobs">${q.jobs.map((job, index) => `<div class="quick-job"><span>${esc(job.Tipo)} · <b>${esc(job.Descripcion)}</b> · ${esc(job.Cantidad)} × ${money(Number(job.PrecioUnitario))}</span><strong>${money(Number(job.Cantidad) * Number(job.PrecioUnitario))}</strong><button class="ghost" type="button" data-quick-remove="${index}">Quitar</button></div>`).join("") || '<p class="muted">Sin conceptos todavía. Podés agregarlos ahora o después desde la orden.</p>'}</div>
+      <div class="quick-total"><label>Descuento ($)<input type="number" step="any" min="0" data-quick-order-field="Descuento" value="${esc(q.order.Descuento)}"></label><div><small>Total presupuestado</small><b id="quickTotal">${money(total)}</b></div></div>
+    </section>
+    <div class="quick-footer"><p>Al guardar, la orden se abre automáticamente para continuar el trabajo y las fotos. Los cobros los revisaremos en la próxima etapa.</p><button id="quickSubmit" type="button" ${q.saving ? "disabled" : ""}>${q.saving ? "Guardando..." : "GUARDAR TODO Y ABRIR TRABAJO"}</button></div>`;
+  $("#quickBack").onclick = async () => {
+    if (q.saving) return;
+    quickCapture();
+    const leave = await confirmModal({
+      title: "¿Salir del ingreso?",
+      message: "Los datos del ingreso rápido que no guardaste se perderán.",
+      confirmText: "Salir sin guardar",
+      cancelText: "Seguir cargando",
+      danger: true,
+    });
+    if (!leave) return;
+    state.quick = null;
+    state.view = "dashboard";
+    render();
+  };
+  document.querySelectorAll("[data-quick-client-mode]").forEach((button) => {
+    button.onclick = () => {
+      quickCapture();
+      q.clientMode = button.dataset.quickClientMode;
+      q.clientId = "";
+      q.motoId = "";
+      q.motoMode = q.clientMode === "new" ? "new" : "existing";
+      renderQuickIntake(false);
+    };
+  });
+  document.querySelectorAll("[data-quick-client]").forEach((button) => {
+    button.onclick = () => {
+      quickCapture();
+      q.clientId = button.dataset.quickClient;
+      q.motoId = "";
+      q.motoMode = activeClientBikes(q.clientId).length ? "existing" : "new";
+      renderQuickIntake(false);
+    };
+  });
+  $("#quickClientSearch")?.addEventListener("input", (event) => {
+    q.clientQuery = event.target.value;
+    if (
+      q.clientId &&
+      normalizeSearch(q.clientQuery) !== normalizeSearch(cliente(q.clientId))
+    ) {
+      q.clientId = "";
+      q.motoId = "";
+      $(".quick-selected")?.remove();
+    }
+    $("#quickClientOptions").innerHTML = quickClientSuggestions();
+    document.querySelectorAll("[data-quick-client]").forEach((button) => {
+      button.onclick = () => {
+        quickCapture();
+        q.clientId = button.dataset.quickClient;
+        q.motoId = "";
+        q.motoMode = activeClientBikes(q.clientId).length ? "existing" : "new";
+        renderQuickIntake(false);
+      };
+    });
+  });
+  document.querySelectorAll("[data-quick-moto-mode]").forEach((button) => {
+    button.onclick = () => {
+      quickCapture();
+      q.motoMode = button.dataset.quickMotoMode;
+      q.motoId = "";
+      renderQuickIntake(false);
+    };
+  });
+  document.querySelectorAll("[data-quick-moto]").forEach((button) => {
+    button.onclick = () => {
+      quickCapture();
+      q.motoId = button.dataset.quickMoto;
+      renderQuickIntake(false);
+    };
+  });
+  $("#quickCatalog")?.addEventListener("change", (event) => {
+    const item = catalog[Number(event.target.value)];
+    if (!item || event.target.value === "") return;
+    $("#quickJobType").value = item.type;
+    $("#quickJobDescription").value = item.name;
+    $("#quickJobPrice").value = item.price ?? "";
+  });
+  $("#quickAddJob").onclick = () => {
+    const description = $("#quickJobDescription").value.trim();
+    const quantity = Number($("#quickJobQty").value);
+    const priceText = $("#quickJobPrice").value;
+    const price = Number(priceText);
+    if (
+      !description ||
+      !Number.isFinite(quantity) ||
+      quantity <= 0 ||
+      priceText === "" ||
+      !Number.isFinite(price) ||
+      price < 0
+    )
+      return toast("Completá descripción, cantidad y precio del concepto.");
+    quickCapture();
+    q.jobs.push({
+      Tipo: $("#quickJobType").value,
+      Descripcion: description,
+      Cantidad: quantity,
+      PrecioUnitario: price,
+    });
+    renderQuickIntake(false);
+  };
+  document.querySelectorAll("[data-quick-remove]").forEach((button) => {
+    button.onclick = () => {
+      quickCapture();
+      q.jobs.splice(Number(button.dataset.quickRemove), 1);
+      renderQuickIntake(false);
+    };
+  });
+  $("#quickSubmit").onclick = saveQuickIntake;
+  document
+    .querySelector("[data-quick-order-field='Descuento']")
+    ?.addEventListener("input", (event) => {
+      q.order.Descuento = event.target.value;
+      const amount = Math.max(
+        0,
+        q.jobs.reduce(
+          (sum, job) => sum + Number(job.Cantidad) * Number(job.PrecioUnitario),
+          0,
+        ) - Number(q.order.Descuento || 0),
+      );
+      $("#quickTotal").textContent = money(amount);
+    });
+}
+async function saveQuickIntake() {
+  const q = state.quick;
+  if (!q || q.saving) return;
+  quickCapture();
+  const existingClient = q.clientMode === "existing";
+  if (existingClient && !q.clientId)
+    return toast("Seleccioná un cliente o registrá uno nuevo.");
+  if (!existingClient && (!q.client.Nombre.trim() || !q.client.WhatsApp.trim()))
+    return toast("Completá nombre y WhatsApp del nuevo cliente.");
+  const existingBike = existingClient && q.motoMode === "existing";
+  if (
+    existingBike &&
+    (!q.motoId || !recordBike(q.motoId) || !motoIsActive(recordBike(q.motoId)))
+  )
+    return toast("Seleccioná una moto activa o registrá una nueva.");
+  if (
+    !existingBike &&
+    !["Patente", "Marca", "Modelo"].every((field) =>
+      String(q.moto[field]).trim(),
+    )
+  )
+    return toast("Completá patente, marca y modelo de la moto.");
+  if (!q.order.FechaIngreso || !q.order.Problema.trim())
+    return toast("Completá fecha y problema informado.");
+  if (Number(q.order.Descuento || 0) < 0)
+    return toast("El descuento no puede ser negativo.");
+  if (existingBike && recordBike(q.motoId)?.IDCliente !== q.clientId)
+    return toast("La moto no pertenece al cliente seleccionado.");
+  if (!existingBike && existingClient) {
+    const duplicate = activeClientBikes(q.clientId).find(
+      (bike) =>
+        normalizeSearch(bike.Patente) === normalizeSearch(q.moto.Patente),
+    );
+    if (duplicate)
+      return toast(
+        "Esa patente ya pertenece a una moto activa del cliente. Seleccionala para no duplicarla.",
+      );
+  }
+  q.saving = true;
+  const btn = $("#quickSubmit");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Guardando cliente, moto y trabajo…";
+  }
+  try {
+    const result = await api("saveIntake", {
+      intakeId: q.id,
+      clientId: existingClient ? q.clientId : "",
+      client: existingClient
+        ? null
+        : {
+            ...q.client,
+            Telefono: q.client.WhatsApp.trim(),
+            WhatsApp: q.client.WhatsApp.trim(),
+            Activo: true,
+          },
+      motoId: existingBike ? q.motoId : "",
+      moto: existingBike ? null : { ...q.moto, Activo: true },
+      order: {
+        ...q.order,
+        Estado: "Recibida",
+        Descuento: Number(q.order.Descuento || 0),
+      },
+      details: q.jobs,
+      advance: null,
+    });
+    if (!result?.order?.IDOrden)
+      throw Error("El servidor no confirmó la orden.");
+    const orderId = result.order.IDOrden;
+    applyIntakeResult(result);
+    state.quick = null;
+    state.view = "Ordenes_Trabajo";
+    state.orderFilter = "";
+    await synchronizeAfterSave();
+    toast("Ingreso completo guardado. Ya podés continuar el trabajo.");
+    orderDetail(orderId);
+  } catch (error) {
+    if (error instanceof SessionExpiredError) showLogin(error.message);
+    else
+      toast(
+        `No se pudo completar el ingreso: ${error.message}. Podés reintentar sin generar otro ingreso.`,
+      );
+  } finally {
+    q.saving = false;
+    const button = $("#quickSubmit");
+    if (button && state.quick === q) {
+      button.disabled = false;
+      button.textContent = "GUARDAR TODO Y ABRIR TRABAJO";
+    }
+  }
+}
+
 function orderCard(o) {
   const t = totals(o.IDOrden),
     m = (state.db.Motos || []).find((x) => x.IDMoto === o.IDMoto),
     title = m ? `${m.Patente} · ${m.Marca} ${m.Modelo}` : moto(o.IDMoto),
-    date = o.FechaIngreso
-      ? new Date(o.FechaIngreso).toLocaleDateString("es-AR")
-      : "Sin fecha";
+    date = o.FechaIngreso ? argentinaDate(o.FechaIngreso) : "Sin fecha";
   return `<article class="item order-card"><div class="itemhead"><div><strong>${esc(title)}</strong><div class="order-meta"><span>Ingreso: ${esc(date)}</span><span>${esc(o.Problema || "Sin detalle")}</span></div></div><span class="badge" data-state="${esc(o.Estado)}">${esc(o.Estado || "Sin estado")}</span></div><p class="amounts"><span>Total <b>${money(t.total)}</b></span><span>Cobrado <b>${money(t.paid)}</b></span><span>Saldo <b class="due">${money(t.due)}</b></span></p><button data-open="${esc(o.IDOrden)}">Abrir orden</button><button class="ghost" data-edit="Ordenes_Trabajo:${esc(o.IDOrden)}">Editar</button></article>`;
 }
-function orderCardView(o) {
-  const summary = totals(o.IDOrden);
-  const bike = (state.db.Motos || []).find((row) => row.IDMoto === o.IDMoto);
-  const client =
+
+function orderCardView(order) {
+  const t = totals(order.IDOrden);
+
+  const bike = recordBike(order.IDMoto);
+
+  const owner =
     bike &&
-    (state.db.Clientes || []).find((row) => row.IDCliente === bike.IDCliente);
-  const title = bike
-    ? [bike.Patente, bike.Marca, bike.Modelo].filter(Boolean).join(" · ")
-    : moto(o.IDMoto);
-  const next = nextOrderStage(o.Estado);
-  return `<article class="item order-card"><div class="itemhead"><div><strong>${esc(title)}</strong><div class="order-meta"><span>Orden: ${esc(o.IDOrden)}</span><span>Cliente: ${esc(client?.Nombre || "Sin cliente")}</span><span>Ingreso: ${esc(argentinaDate(o.FechaIngreso))}</span><span>${esc(o.Problema || "Sin detalle")}</span></div></div><span class="badge" data-state="${esc(o.Estado)}">${esc(orderStageLabel(o.Estado))}</span></div><p class="amounts"><span>Presupuesto <b>${money(summary.total)}</b></span><span>Cobrado <b>${money(summary.paid)}</b></span><span>Saldo <b class="due">${money(summary.due)}</b></span></p><div class="order-actions"><button data-open="${esc(o.IDOrden)}">Abrir orden</button>${next ? `<button class="ghost" data-order-stage="${esc(o.IDOrden)}" data-next-stage="${esc(next)}">Avanzar: ${esc(orderStageLabel(next))}</button>` : ""}<button class="ghost" data-edit="Ordenes_Trabajo:${esc(o.IDOrden)}">Editar</button></div></article>`;
+    (state.db.Clientes || []).find((x) => x.IDCliente === bike.IDCliente);
+
+  const title = [
+    owner?.Nombre || "Cliente no encontrado",
+    bike?.Patente,
+    bike?.Marca,
+    bike?.Modelo,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const open = !["Entregada", "Cancelada"].includes(order.Estado);
+
+  return `
+    <article class="item order-row">
+
+      <div class="order-row-main">
+        <strong>
+          ${esc(title || "Moto no encontrada")}
+        </strong>
+
+        <div class="order-meta">
+          <span>
+            ${esc(argentinaDate(order.FechaIngreso))}
+          </span>
+
+          <span>
+            ${esc(order.Problema || "Sin problema informado")}
+          </span>
+        </div>
+      </div>
+
+      <div class="order-row-status">
+        <span
+          class="badge"
+          data-state="${esc(order.Estado)}"
+        >
+          ${esc(orderStageLabel(order.Estado))}
+        </span>
+      </div>
+
+      <div class="order-row-money">
+        <span>
+          Presupuesto <b>${money(t.total)}</b>
+        </span>
+
+        <span>
+          Saldo <b class="due">${money(t.due)}</b>
+        </span>
+      </div>
+
+      <div class="order-row-actions">
+
+        <button
+          type="button"
+          data-open="${esc(order.IDOrden)}"
+        >
+          Abrir trabajo
+        </button>
+
+        <button
+          type="button"
+          class="ghost"
+          data-order-whatsapp="${esc(order.IDOrden)}"
+        >
+          WhatsApp
+        </button>
+
+        ${
+          open
+            ? `
+              <button
+                type="button"
+                class="ghost"
+                data-deliver="${esc(order.IDOrden)}"
+              >
+                ✓ Entregar hoy
+              </button>
+            `
+            : ""
+        }
+
+      </div>
+
+    </article>
+  `;
 }
+
 function argentinaDate(value) {
   const text = String(value || ""),
     plainDate = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -1482,68 +2357,235 @@ function normalizeWhatsApp(value, fallback = false) {
 }
 const whatsappIcon =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2a9.8 9.8 0 0 0-8.4 14.8L2.5 21.5l4.8-1.1A9.8 9.8 0 1 0 12 2Zm0 17.8a8 8 0 0 1-4.1-1.1l-.3-.2-2.8.7.8-2.7-.2-.3A8 8 0 1 1 12 19.8Zm4.4-6c-.2-.1-1.4-.7-1.6-.7s-.3-.1-.5.2-.6.7-.7.8-.3.2-.5.1a6.5 6.5 0 0 1-1.9-1.2 7 7 0 0 1-1.3-1.7c-.1-.2 0-.4.1-.5l.4-.4c.1-.1.2-.3.2-.4s0-.3-.1-.4l-.7-1.5c-.2-.4-.4-.3-.5-.3h-.4c-.2 0-.4.1-.6.3s-.8.8-.8 2 .8 2.3.9 2.5a9.2 9.2 0 0 0 3.5 3.1c.5.2 1 .4 1.3.5.5.2 1 .2 1.4.1.4-.1 1.4-.6 1.6-1.2.2-.6.2-1.1.1-1.2s-.2-.2-.4-.3Z"/></svg>';
+
+/* =========================================================
+   MOTOMANIA - FICHA INDIVIDUAL DEL CLIENTE
+   Incluye WhatsApp con presupuesto o mensaje libre
+   ========================================================= */
+
 function customerDetail(id) {
   const customer = (state.db.Clientes || []).find(
-    (row) => row.IDCliente === id,
+    (row) => String(row.IDCliente) === String(id),
   );
-  if (!customer) return toast("No se encontró el cliente.");
+
+  if (!customer) {
+    toast("No se encontró el cliente.");
+    return;
+  }
+
   state.galleryAbortController?.abort();
   state.activeOrderId = "";
   state.galleryRequest += 1;
-  const bikes = (state.db.Motos || []).filter((row) => row.IDCliente === id);
-  const phone = String(customer.Telefono || "").trim();
+
+  // MOTOS DEL CLIENTE
+  const bikes = (state.db.Motos || []).filter(
+    (row) => String(row.IDCliente) === String(id),
+  );
+
+  const active = bikes.filter(motoIsActive);
+
+  const inactive = bikes.filter((bike) => !motoIsActive(bike));
+
+  // DATOS DE CONTACTO
+  const phone = String(customer.WhatsApp || customer.Telefono || "").trim();
+
   const whatsapp =
-    normalizeWhatsApp(customer.WhatsApp) || normalizeWhatsApp(phone, true);
-  const contactActions = [
+    normalizeWhatsApp(customer.WhatsApp) ||
+    normalizeWhatsApp(customer.Telefono, true);
+
+  // BOTONES DE CONTACTO
+  const actions = [
     phone
-      ? `<a class="contact-link" href="tel:${esc(phone.replace(/[^+\d]/g, ""))}">📞 Llamar</a>`
+      ? `
+        <a
+          class="contact-link"
+          href="tel:${esc(phone.replace(/[^+\d]/g, ""))}"
+        >
+          📞 Llamar
+        </a>
+      `
       : "",
+
     whatsapp
-      ? `<a class="contact-link contact-whatsapp" href="https://wa.me/${whatsapp}" target="_blank" rel="noopener noreferrer">${whatsappIcon} WhatsApp</a>`
+      ? `
+        <button
+          type="button"
+          class="contact-link contact-whatsapp"
+          id="customerWhatsAppButton"
+        >
+          ${whatsappIcon}
+          WhatsApp
+        </button>
+      `
       : "",
   ]
     .filter(Boolean)
     .join("");
-  const detail = [
-    ["Teléfono", customer.Telefono],
-    ["WhatsApp", customer.WhatsApp],
+
+  // INFORMACION DEL CLIENTE
+  const details = [
+    ["WhatsApp", customer.WhatsApp || customer.Telefono],
     ["DNI", customer.DNI],
     ["Domicilio", customer.Domicilio],
     ["Observaciones", customer.Observaciones],
   ]
     .filter(([, value]) => String(value || "").trim())
+
     .map(
-      ([label, value]) =>
-        `<div class="contact-field"><small>${esc(label)}</small><strong>${esc(value)}</strong></div>`,
+      ([label, value]) => `
+      <div class="contact-field">
+        <small>${esc(label)}</small>
+        <strong>${esc(value)}</strong>
+      </div>
+    `,
     )
+
     .join("");
-  $("#content").innerHTML =
-    `<div class="toolbar"><div><h2>Ficha del cliente</h2><p class="muted">Agenda de contactos y motocicletas asociadas.</p></div><button class="ghost" id="back">← Volver a clientes</button></div><section class="panel contact-profile"><div class="contact-profile-head"><div class="contact-avatar">${esc((customer.Nombre || "C").trim().charAt(0).toUpperCase())}</div><div><h2>${esc(customer.Nombre || "Cliente sin nombre")}</h2><p class="muted">${bikes.length} moto${bikes.length === 1 ? "" : "s"} registrada${bikes.length === 1 ? "" : "s"}</p></div></div><div class="contact-actions">${contactActions}<button class="ghost" data-edit="Clientes:${esc(id)}">Editar cliente</button></div><div class="contact-fields">${detail || '<p class="muted">Sin datos adicionales.</p>'}</div></section><div class="toolbar"><h2>Motos asociadas (${bikes.length})</h2><button data-add-client-moto="${esc(id)}">+ Agregar moto</button></div><div class="list">${bikes.map(motoCard).join("") || '<div class="empty">Este cliente todavía no tiene motos registradas.</div>'}</div>`;
+
+  // PANTALLA COMPLETA
+  $("#content").innerHTML = `
+
+    <div class="toolbar">
+
+      <div>
+        <h2>Ficha del cliente</h2>
+        <p class="muted">
+          Motos y trabajos asociados.
+        </p>
+      </div>
+
+      <button
+        type="button"
+        class="ghost"
+        id="back"
+      >
+        ← Volver a clientes
+      </button>
+
+    </div>
+
+    <section class="panel contact-profile">
+
+      <div class="contact-profile-head">
+
+        <div class="contact-avatar">
+          ${esc((customer.Nombre || "C").trim().charAt(0).toUpperCase())}
+        </div>
+
+        <div>
+
+          <h2>
+            ${esc(customer.Nombre || "Sin nombre")}
+          </h2>
+
+          <p class="muted">
+            ${active.length}
+            moto${active.length === 1 ? "" : "s"}
+            activa${active.length === 1 ? "" : "s"}
+          </p>
+
+        </div>
+
+      </div>
+
+      <div class="contact-actions">
+
+        ${actions}
+
+        <button
+          type="button"
+          class="ghost"
+          data-edit="Clientes:${esc(id)}"
+        >
+          Editar cliente
+        </button>
+
+        <button
+          type="button"
+          data-add-client-moto="${esc(id)}"
+        >
+          + AGREGAR MOTO
+        </button>
+
+        <button
+          type="button"
+          class="ghost"
+          data-quick-client="${esc(id)}"
+        >
+          + NUEVO TRABAJO
+        </button>
+
+      </div>
+
+      <div class="contact-fields">
+
+        ${details || '<p class="muted">Sin datos adicionales.</p>'}
+
+      </div>
+
+    </section>
+
+    <div class="toolbar">
+      <h2>Motos activas (${active.length})</h2>
+    </div>
+
+    <div class="list">
+
+      ${
+        active.map(motoCard).join("") ||
+        '<div class="empty">Sin motos activas. Podés agregar una ahora.</div>'
+      }
+
+    </div>
+
+    ${
+      inactive.length
+        ? `
+          <details class="inactive-section">
+
+            <summary>
+              Motos dadas de baja (${inactive.length})
+            </summary>
+
+            <div class="list">
+              ${inactive.map(motoCard).join("")}
+            </div>
+
+          </details>
+        `
+        : ""
+    }
+
+  `;
+
+  // VOLVER A CLIENTES
   $("#back").onclick = () => {
     state.view = "Clientes";
     render();
   };
+
+  // CONECTAR BOTONES EXISTENTES
   wire();
+
+  // WHATSAPP CON LAS DOS OPCIONES
+  const whatsappButton = $("#customerWhatsAppButton");
+
+  if (whatsappButton) {
+    whatsappButton.onclick = () => {
+      openContactWhatsApp(customer.IDCliente);
+    };
+  }
 }
 
 function customerCard(client) {
-  const phone = String(client.Telefono || "").trim(),
-    whatsapp = String(client.WhatsApp || "").trim(),
-    waNumber = normalizeWhatsApp(whatsapp) || normalizeWhatsApp(phone, true);
-  const bikesCount = (state.db.Motos || []).filter(
-    (bike) => bike.IDCliente === client.IDCliente,
-  ).length;
-  const rows = [
-    phone && `<div><span>Teléfono</span><b>${esc(phone)}</b></div>`,
-    whatsapp && `<div><span>WhatsApp</span><b>${esc(whatsapp)}</b></div>`,
-    client.DNI && `<div><span>DNI</span><b>${esc(client.DNI)}</b></div>`,
-    client.Domicilio &&
-      `<div class="customer-wide"><span>Domicilio</span><b>${esc(client.Domicilio)}</b></div>`,
-  ]
-    .filter(Boolean)
-    .join("");
-  return `<article class="item customer-card"><div class="itemhead"><div><strong>${esc(client.Nombre || "Cliente sin nombre")}</strong></div><div class="customer-actions">${waNumber ? `<a class="whatsapp-button" href="https://wa.me/${waNumber}" target="_blank" rel="noopener noreferrer" aria-label="Abrir WhatsApp de ${esc(client.Nombre || "cliente")}">${whatsappIcon}<span>WhatsApp</span></a>` : ""}<button data-open-client="${esc(client.IDCliente)}">Ver ficha · ${bikesCount} moto${bikesCount === 1 ? "" : "s"}</button><button class="ghost" data-edit="Clientes:${esc(client.IDCliente)}">Editar</button></div></div><div class="customer-data">${rows || '<span class="muted">Sin datos de contacto.</span>'}</div>${client.Observaciones ? `<p class="customer-note">${esc(client.Observaciones)}</p>` : ""}</article>`;
+  const whatsapp = String(client.WhatsApp || client.Telefono || "").trim();
+  const waNumber =
+    normalizeWhatsApp(client.WhatsApp) ||
+    normalizeWhatsApp(client.Telefono, true);
+  const bikesCount = activeClientBikes(client.IDCliente).length;
+  return `<article class="item customer-card"><div class="itemhead"><div><strong>${esc(client.Nombre || "Cliente sin nombre")}</strong>${whatsapp ? `<small>WhatsApp: ${esc(whatsapp)}</small>` : ""}</div><div class="customer-actions">${waNumber ? `<a class="whatsapp-button" href="https://wa.me/${waNumber}" target="_blank" rel="noopener noreferrer" aria-label="WhatsApp de ${esc(client.Nombre)}">${whatsappIcon} WhatsApp</a>` : ""}<button data-open-client="${esc(client.IDCliente)}">Ver ficha · ${bikesCount} motos</button><button class="ghost" data-add-client-moto="${esc(client.IDCliente)}">+ Moto</button><button class="ghost" data-quick-client="${esc(client.IDCliente)}">+ Trabajo</button></div></div>${client.Domicilio ? `<small>${esc(client.Domicilio)}</small>` : ""}</article>`;
 }
+
 function motoIsActive(bike) {
   return !["false", "0", "no", "inactivo", "baja"].includes(
     String(bike?.Activo ?? "")
@@ -1593,8 +2635,10 @@ function motoCard(bike) {
   const title =
     [bike.Patente, bike.Marca, bike.Modelo].filter(Boolean).join(" · ") ||
     "Moto sin identificar";
-  return `<article class="item moto-card"><div class="itemhead"><div><strong>${esc(title)}</strong><small>Cliente: ${esc(owner?.Nombre || "Sin cliente")}</small></div><div class="customer-actions">${owner ? `<button class="ghost" data-open-client="${esc(owner.IDCliente)}">Ver cliente</button>` : ""}<button data-open-moto="${esc(bike.IDMoto)}">Ver historial</button><button class="ghost" data-edit="Motos:${esc(bike.IDMoto)}">Editar</button><button class="ghost" data-moto-active="${esc(bike.IDMoto)}" data-active="${motoIsActive(bike) ? "false" : "true"}">${motoIsActive(bike) ? "Dar de baja" : "Reactivar"}</button></div></div>${!motoIsActive(bike) ? '<p class="muted"><b>● Moto dada de baja</b></p>' : ""}<p class="muted">${historyCount} orden${historyCount === 1 ? "" : "es"} registrada${historyCount === 1 ? "" : "s"}</p></article>`;
+  const active = motoIsActive(bike);
+  return `<article class="item moto-card"><div class="itemhead"><div><strong>${esc(title)}</strong><small>Cliente: ${esc(owner?.Nombre || "Sin cliente")} · ${historyCount} trabajos</small></div><div class="customer-actions"><button data-open-moto="${esc(bike.IDMoto)}">Ver historial</button>${active ? `<button data-quick-moto="${esc(bike.IDMoto)}">+ Trabajo</button>` : '<span class="muted">Moto dada de baja</span>'}<button class="ghost" data-edit="Motos:${esc(bike.IDMoto)}">Editar</button><button class="ghost" data-moto-active="${esc(bike.IDMoto)}" data-active="${active ? "false" : "true"}">${active ? "Dar de baja" : "Reactivar"}</button></div></div></article>`;
 }
+
 function paymentCard(payment) {
   const order = (state.db.Ordenes_Trabajo || []).find(
       (row) => row.IDOrden === payment.IDOrden,
@@ -1632,6 +2676,15 @@ function searchableRecord(table, record) {
         (bike) => String(bike.IDCliente) === String(record.IDCliente),
       ),
     );
+  } else if (table === "Ordenes_Trabajo") {
+    const bike = recordBike(record.IDMoto);
+    if (bike) {
+      related.push(bike);
+      const owner = (state.db.Clientes || []).find(
+        (c) => c.IDCliente === bike.IDCliente,
+      );
+      if (owner) related.push(owner);
+    }
   } else if (table === "Motos") {
     const owner = (state.db.Clientes || []).find(
       (client) => String(client.IDCliente) === String(record.IDCliente),
@@ -1643,41 +2696,736 @@ function searchableRecord(table, record) {
     .map(normalizeSearch)
     .join(" ");
 }
+
+// =====================================================
+// MOTOMANIA - LISTADO DE CLIENTES EN FORMATO TABLA
+// Ordenamiento por fecha de alta o nombre alfabetico
+// =====================================================
+
+/* =========================================================
+   MOTOMANIA - TABLA DE CLIENTES
+   Orden por fecha / alfabetico
+   Busqueda por cliente, telefono o patente
+   Acciones: ficha, moto, trabajo y WhatsApp
+   ========================================================= */
+
+function renderClientsTable() {
+  const clientes = [...(state.db.Clientes || [])];
+
+  let ordenActual = "fecha";
+
+  $("#content").innerHTML = `
+    <div class="toolbar">
+      <div>
+        <h2>Clientes</h2>
+        <p class="muted">${clientes.length} clientes registrados</p>
+      </div>
+
+      <button type="button" data-add="Clientes">
+        + Nuevo cliente
+      </button>
+    </div>
+
+    <div class="clients-table-tools">
+
+      <input
+        id="search"
+        type="search"
+        placeholder="Buscar cliente, WhatsApp o patente..."
+        autocomplete="off"
+      >
+
+      <div class="clients-sort-actions">
+
+        <button
+          type="button"
+          id="sortClientsByDate"
+          class="ghost clients-sort-button is-active"
+        >
+          ↓ Más recientes primero
+        </button>
+
+        <button
+          type="button"
+          id="sortClientsByName"
+          class="ghost clients-sort-button"
+        >
+          A–Z Orden alfabético
+        </button>
+
+      </div>
+
+    </div>
+
+    <div class="clients-table-wrap">
+
+      <table class="clients-table">
+
+        <thead>
+          <tr>
+            <th>Cliente</th>
+            <th>WhatsApp</th>
+            <th>Motos activas</th>
+            <th>Fecha de alta</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+
+        <tbody id="clientsRows"></tbody>
+
+      </table>
+
+    </div>
+
+    <p id="clientsCount" class="muted"></p>
+  `;
+
+  // -------------------------------------------------------
+  // ACTUALIZAR TABLA
+  // -------------------------------------------------------
+
+  function actualizarTabla() {
+    const busqueda = $("#search").value.trim();
+
+    const terminos = busqueda.split(/\s+/).filter(Boolean).map(normalizeSearch);
+
+    let resultado = clientes
+      .map((cliente, indice) => ({
+        cliente,
+        indice,
+      }))
+      .filter(({ cliente }) => {
+        const contenido = searchableRecord("Clientes", cliente);
+
+        return terminos.every((termino) => contenido.includes(termino));
+      });
+
+    // -----------------------------------------------------
+    // ORDENAMIENTO
+    // -----------------------------------------------------
+
+    if (ordenActual === "nombre") {
+      resultado.sort((a, b) =>
+        String(a.cliente.Nombre || "").localeCompare(
+          String(b.cliente.Nombre || ""),
+          "es",
+          { sensitivity: "base" },
+        ),
+      );
+    } else {
+      resultado.sort((a, b) => {
+        const fechaA = Date.parse(a.cliente.FechaAlta || "");
+
+        const fechaB = Date.parse(b.cliente.FechaAlta || "");
+
+        const valorA = Number.isFinite(fechaA) ? fechaA : 0;
+
+        const valorB = Number.isFinite(fechaB) ? fechaB : 0;
+
+        return valorB - valorA || b.indice - a.indice;
+      });
+    }
+
+    // -----------------------------------------------------
+    // GENERAR RENGLONES
+    // -----------------------------------------------------
+
+    $("#clientsRows").innerHTML =
+      resultado
+        .map(({ cliente }) => {
+          const nombre = cliente.Nombre || "Sin nombre";
+
+          const whatsapp = cliente.WhatsApp || cliente.Telefono || "";
+
+          const numero =
+            normalizeWhatsApp(cliente.WhatsApp) ||
+            normalizeWhatsApp(cliente.Telefono, true);
+
+          const cantidadMotos = (state.db.Motos || []).filter(
+            (moto) =>
+              String(moto.IDCliente) === String(cliente.IDCliente) &&
+              motoIsActive(moto),
+          ).length;
+
+          const fecha = cliente.FechaAlta
+            ? argentinaDate(cliente.FechaAlta)
+            : "—";
+
+          return `
+        <tr>
+
+          <td class="clients-name">
+            ${esc(nombre)}
+          </td>
+
+          <td>
+            ${esc(whatsapp || "—")}
+          </td>
+
+          <td class="clients-number">
+            ${cantidadMotos}
+          </td>
+
+          <td class="clients-date">
+            ${esc(fecha)}
+          </td>
+
+          <td>
+
+            <div class="clients-row-actions">
+
+              <button
+                type="button"
+                data-open-client="${esc(cliente.IDCliente)}"
+              >
+                Ver ficha
+              </button>
+
+              <button
+                type="button"
+                class="ghost"
+                data-add-client-moto="${esc(cliente.IDCliente)}"
+              >
+                + Moto
+              </button>
+
+              <button
+                type="button"
+                class="ghost"
+                data-quick-client="${esc(cliente.IDCliente)}"
+              >
+                + Trabajo
+              </button>
+
+              <button
+                type="button"
+                class="ghost"
+                data-contact-whatsapp="${esc(cliente.IDCliente)}"
+                ${numero ? "" : "disabled"}
+              >
+                WhatsApp
+              </button>
+
+            </div>
+
+          </td>
+
+        </tr>
+      `;
+        })
+        .join("") ||
+      `
+      <tr>
+        <td colspan="5" class="clients-empty">
+          No se encontraron clientes.
+        </td>
+      </tr>
+    `;
+
+    $("#clientsCount").textContent = `${resultado.length} cliente(s) mostrados`;
+
+    // Reconectar las acciones existentes.
+    wire();
+
+    // Conectar los botones WhatsApp de esta tabla.
+    document.querySelectorAll("[data-contact-whatsapp]").forEach((button) => {
+      button.onclick = () => {
+        const clientId = button.dataset.contactWhatsapp;
+
+        openContactWhatsApp(clientId);
+      };
+    });
+  }
+
+  // -------------------------------------------------------
+  // BUSCADOR
+  // -------------------------------------------------------
+
+  $("#search").addEventListener("input", actualizarTabla);
+
+  // -------------------------------------------------------
+  // ORDENAMIENTO POR FECHA
+  // -------------------------------------------------------
+
+  $("#sortClientsByDate").onclick = () => {
+    ordenActual = "fecha";
+
+    $("#sortClientsByDate").classList.add("is-active");
+
+    $("#sortClientsByName").classList.remove("is-active");
+
+    actualizarTabla();
+  };
+
+  // -------------------------------------------------------
+  // ORDENAMIENTO ALFABETICO
+  // -------------------------------------------------------
+
+  $("#sortClientsByName").onclick = () => {
+    ordenActual = "nombre";
+
+    $("#sortClientsByName").classList.add("is-active");
+
+    $("#sortClientsByDate").classList.remove("is-active");
+
+    actualizarTabla();
+  };
+
+  // -------------------------------------------------------
+  // PRIMERA CARGA
+  // -------------------------------------------------------
+
+  actualizarTabla();
+}
+
+/* =========================================================
+   MOTOMANIA - TABLA COMPACTA DE MOTOS
+   Ordenar por patente, moto o dueño.
+   ========================================================= */
+
+/* =========================================================
+   MOTOMANIA - TABLA COMPACTA DE MOTOS
+   Ordenar por patente, moto o dueño
+   Acciones: historial, trabajo, editar, baja y WhatsApp
+   ========================================================= */
+
+function renderMotosTable() {
+  const motos = [...(state.db.Motos || [])];
+
+  const clientes = new Map(
+    (state.db.Clientes || []).map((c) => [String(c.IDCliente), c]),
+  );
+
+  let orden = "patente";
+
+  const nombreDueno = (bike) =>
+    clientes.get(String(bike.IDCliente))?.Nombre || "Sin dueño";
+
+  const nombreMoto = (bike) =>
+    [bike.Marca, bike.Modelo].filter(Boolean).join(" ") || "Sin identificar";
+
+  const comparar = (a, b) =>
+    String(a || "").localeCompare(String(b || ""), "es", {
+      sensitivity: "base",
+      numeric: true,
+    });
+
+  // -------------------------------------------------------
+  // ESTRUCTURA DE LA PANTALLA
+  // -------------------------------------------------------
+
+  $("#content").innerHTML = `
+    <div class="toolbar">
+
+      <div>
+        <h2>Motos</h2>
+        <p class="muted" id="motosCount"></p>
+      </div>
+
+      <button type="button" data-add="Motos">
+        + Nueva moto
+      </button>
+
+    </div>
+
+    <div class="motos-table-tools">
+
+      <input
+        id="search"
+        type="search"
+        placeholder="Buscar patente, marca, modelo o dueño..."
+        autocomplete="off"
+      >
+
+      <div class="motos-sort-actions">
+
+        <button
+          type="button"
+          class="ghost is-active"
+          data-motos-sort="patente"
+        >
+          Por patente
+        </button>
+
+        <button
+          type="button"
+          class="ghost"
+          data-motos-sort="moto"
+        >
+          Por moto
+        </button>
+
+        <button
+          type="button"
+          class="ghost"
+          data-motos-sort="dueno"
+        >
+          Por dueño
+        </button>
+
+      </div>
+
+    </div>
+
+    <label class="motos-inactive-filter">
+
+      <input
+        type="checkbox"
+        id="showInactiveMotos"
+      >
+
+      Mostrar motos dadas de baja
+
+    </label>
+
+    <div class="motos-table-wrap">
+
+      <table class="motos-table">
+
+        <thead>
+          <tr>
+            <th>Patente</th>
+            <th>Moto</th>
+            <th>Dueño</th>
+            <th>Trabajos</th>
+            <th>Estado</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+
+        <tbody id="motosRows"></tbody>
+
+      </table>
+
+    </div>
+  `;
+
+  // -------------------------------------------------------
+  // ACTUALIZAR TABLA
+  // -------------------------------------------------------
+
+  function actualizarTabla() {
+    const terminos = ($("#search").value || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(normalizeSearch);
+
+    const mostrarInactivas = $("#showInactiveMotos").checked;
+
+    const resultado = motos
+
+      .filter((bike) => mostrarInactivas || motoIsActive(bike))
+
+      .filter((bike) => {
+        const texto = searchableRecord("Motos", bike);
+
+        return terminos.every((t) => texto.includes(t));
+      });
+
+    // -----------------------------------------------------
+    // ORDENAMIENTO
+    // -----------------------------------------------------
+
+    resultado.sort((a, b) => {
+      let diferencia = 0;
+
+      if (orden === "patente") {
+        diferencia = comparar(a.Patente, b.Patente);
+      }
+
+      if (orden === "moto") {
+        diferencia = comparar(nombreMoto(a), nombreMoto(b));
+      }
+
+      if (orden === "dueno") {
+        diferencia = comparar(nombreDueno(a), nombreDueno(b));
+      }
+
+      return diferencia || comparar(a.Patente, b.Patente);
+    });
+
+    $("#motosCount").textContent = `${resultado.length} motos mostradas`;
+
+    // -----------------------------------------------------
+    // GENERAR RENGLONES DE LA TABLA
+    // -----------------------------------------------------
+
+    $("#motosRows").innerHTML =
+      resultado
+        .map((bike) => {
+          const activa = motoIsActive(bike);
+
+          const owner = clientes.get(String(bike.IDCliente));
+
+          const trabajos = (state.db.Ordenes_Trabajo || []).filter(
+            (o) => String(o.IDMoto) === String(bike.IDMoto),
+          ).length;
+
+          const telefonoWhatsApp = owner
+            ? normalizeWhatsApp(owner.WhatsApp) ||
+              normalizeWhatsApp(owner.Telefono, true)
+            : "";
+
+          return `
+        <tr class="${activa ? "" : "moto-inactiva"}">
+
+          <td class="motos-patente">
+            ${esc(bike.Patente || "Sin patente")}
+          </td>
+
+          <td>
+            ${esc(nombreMoto(bike))}
+          </td>
+
+          <td>
+            ${
+              owner
+                ? `
+                  <button
+                    type="button"
+                    class="motos-owner-link"
+                    data-open-client="${esc(owner.IDCliente)}"
+                  >
+                    ${esc(owner.Nombre)}
+                  </button>
+                `
+                : "Sin dueño"
+            }
+          </td>
+
+          <td class="motos-number">
+            ${trabajos}
+          </td>
+
+          <td>
+            <span class="motos-status ${activa ? "activo" : "baja"}">
+              ${activa ? "Activa" : "Baja"}
+            </span>
+          </td>
+
+          <td>
+
+            <div class="motos-row-actions">
+
+              <button
+                type="button"
+                data-open-moto="${esc(bike.IDMoto)}"
+              >
+                Historial
+              </button>
+
+              ${
+                activa
+                  ? `
+                    <button
+                      type="button"
+                      data-quick-moto="${esc(bike.IDMoto)}"
+                    >
+                      + Trabajo
+                    </button>
+                  `
+                  : ""
+              }
+
+              <button
+                type="button"
+                class="ghost"
+                data-edit="Motos:${esc(bike.IDMoto)}"
+              >
+                Editar
+              </button>
+
+              <button
+                type="button"
+                class="ghost"
+                data-moto-active="${esc(bike.IDMoto)}"
+                data-active="${activa ? "false" : "true"}"
+              >
+                ${activa ? "Dar de baja" : "Reactivar"}
+              </button>
+
+              <button
+                type="button"
+                class="ghost"
+                data-moto-whatsapp="${esc(bike.IDMoto)}"
+                ${telefonoWhatsApp ? "" : "disabled"}
+              >
+                WhatsApp
+              </button>
+
+            </div>
+
+          </td>
+
+        </tr>
+      `;
+        })
+        .join("") ||
+      `
+      <tr>
+        <td colspan="6" class="motos-empty">
+          No se encontraron motos.
+        </td>
+      </tr>
+    `;
+
+    // -----------------------------------------------------
+    // CONECTAR BOTONES EXISTENTES
+    // -----------------------------------------------------
+
+    wire();
+
+    // -----------------------------------------------------
+    // CONECTAR WHATSAPP
+    // -----------------------------------------------------
+
+    document.querySelectorAll("[data-moto-whatsapp]").forEach((button) => {
+      button.onclick = () => {
+        const motoId = button.dataset.motoWhatsapp;
+
+        const bike = (state.db.Motos || []).find(
+          (m) => String(m.IDMoto) === String(motoId),
+        );
+
+        if (!bike) {
+          toast("No se encontró la moto.");
+          return;
+        }
+
+        // Abre las opciones de WhatsApp del dueño,
+        // filtrando presupuestos por la moto elegida.
+        openContactWhatsApp(bike.IDCliente, bike.IDMoto);
+      };
+    });
+  }
+
+  // -------------------------------------------------------
+  // BUSCADOR
+  // -------------------------------------------------------
+
+  $("#search").addEventListener("input", actualizarTabla);
+
+  // -------------------------------------------------------
+  // MOSTRAR MOTOS DADAS DE BAJA
+  // -------------------------------------------------------
+
+  $("#showInactiveMotos").addEventListener("change", actualizarTabla);
+
+  // -------------------------------------------------------
+  // BOTONES DE ORDENAMIENTO
+  // -------------------------------------------------------
+
+  document.querySelectorAll("[data-motos-sort]").forEach((button) => {
+    button.onclick = () => {
+      orden = button.dataset.motosSort;
+
+      document.querySelectorAll("[data-motos-sort]").forEach((b) => {
+        b.classList.toggle("is-active", b.dataset.motosSort === orden);
+      });
+
+      actualizarTabla();
+    };
+  });
+
+  // -------------------------------------------------------
+  // PRIMERA CARGA
+  // -------------------------------------------------------
+
+  actualizarTabla();
+}
+
 function list(table) {
   if (!defs[table]) return;
-  const rows =
+
+  if (table === "Motos") {
+    renderMotosTable();
+    return;
+  }
+
+  // Clientes usa su tabla compacta en lugar de tarjetas.
+  if (table === "Clientes") {
+    renderClientsTable();
+    return;
+  }
+  const original =
     table === "Pagos"
       ? (state.db[table] || []).filter((row) => !isDuplicatedPaymentHeader(row))
-      : state.db[table] || [];
+      : [...(state.db[table] || [])];
+  const rows =
+    table === "Ordenes_Trabajo"
+      ? original
+          .map((record, index) => ({ record, index }))
+          .sort((a, b) => {
+            const byDate = String(b.record.FechaIngreso || "").localeCompare(
+              String(a.record.FechaIngreso || ""),
+            );
+            return byDate || b.index - a.index;
+          })
+          .map((entry) => entry.record)
+      : original;
+  const orderFilter = state.orderFilter;
+  const activeFiltered = rows.filter((row) => {
+    if (table === "Motos") return motoIsActive(row);
+    if (table !== "Ordenes_Trabajo") return true;
+    if (orderFilter === "open")
+      return !["Entregada", "Cancelada"].includes(row.Estado);
+    if (orderFilter === "ready") return row.Estado === "Lista para retirar";
+    if (orderFilter === "parts") return row.Estado === "Esperando repuestos";
+    return true;
+  });
+  const heading =
+    table === "Ordenes_Trabajo" && orderFilter
+      ? {
+          open: "Trabajos abiertos",
+          ready: "Listas para retirar",
+          parts: "Esperando repuestos",
+        }[orderFilter]
+      : defs[table].title;
   $("#content").innerHTML =
-    `<div class="toolbar"><div><h2>${defs[table].title}</h2><p class="muted">${rows.length} registro${rows.length === 1 ? "" : "s"}</p></div><button data-add="${table}">+ Nuevo</button></div>${table === "Motos" ? '<label style="display:flex;align-items:center;gap:10px;margin:12px 0;cursor:pointer"><input type="checkbox" id="showInactiveMotos" style="width:20px;height:20px"> Mostrar motos dadas de baja</label>' : ""}<input id="search" placeholder="Buscar por nombre, patente, descripción…" aria-label="Buscar en ${defs[table].title}"><div class="list" id="results"></div>`;
+    `<div class="toolbar"><div><h2>${heading}</h2><p class="muted">${activeFiltered.length} registro${activeFiltered.length === 1 ? "" : "s"}${table === "Ordenes_Trabajo" ? " · más recientes primero" : ""}</p></div><div class="toolbar-actions">${table === "Ordenes_Trabajo" && orderFilter ? '<button type="button" class="ghost" id="clearOrderFilter">Ver todos los trabajos</button>' : ""}<button data-add="${table}">+ ${table === "Ordenes_Trabajo" ? "NUEVO INGRESO" : "Nuevo"}</button></div></div>
+  ${table === "Motos" ? '<label class="show-inactive"><input type="checkbox" id="showInactiveMotos"> Mostrar motos dadas de baja</label>' : ""}
+  <input id="search" placeholder="${table === "Ordenes_Trabajo" ? "Buscar cliente, patente, marca o problema…" : "Buscar nombre, patente o descripción…"}" aria-label="Buscar en ${defs[table].title}"><div class="list ${table === "Ordenes_Trabajo" ? "order-list" : ""}" id="results"></div>`;
+  $("#clearOrderFilter")?.addEventListener("click", () => {
+    state.orderFilter = "";
+    list(table);
+  });
   const display = () => {
-    $("#results").innerHTML =
-      rows
-        .filter(
-          (r) =>
-            table !== "Motos" ||
-            motoIsActive(r) ||
-            $("#showInactiveMotos")?.checked,
+    const filtered = rows.filter((row) => {
+      if (
+        table === "Motos" &&
+        !motoIsActive(row) &&
+        !$("#showInactiveMotos")?.checked
+      )
+        return false;
+      if (table === "Ordenes_Trabajo") {
+        if (
+          orderFilter === "open" &&
+          ["Entregada", "Cancelada"].includes(row.Estado)
         )
-        .filter((r) => {
-          const query = $("#search").value.trim();
-          if (!query) return true;
-          const searchable = searchableRecord(table, r);
-          return query
-            .split(/\s+/)
-            .every((term) => searchable.includes(normalizeSearch(term)));
-        })
-        .map((r) =>
+          return false;
+        if (orderFilter === "ready" && row.Estado !== "Lista para retirar")
+          return false;
+        if (orderFilter === "parts" && row.Estado !== "Esperando repuestos")
+          return false;
+      }
+      const words = $("#search").value.trim().split(/\s+/).filter(Boolean);
+      return words.every((word) =>
+        searchableRecord(table, row).includes(normalizeSearch(word)),
+      );
+    });
+    $("#results").innerHTML =
+      filtered
+        .map((row) =>
           table === "Clientes"
-            ? customerCard(r)
+            ? customerCard(row)
             : table === "Motos"
-              ? motoCard(r)
+              ? motoCard(row)
               : table === "Pagos"
-                ? paymentCard(r)
+                ? paymentCard(row)
                 : table === "Ordenes_Trabajo"
-                  ? orderCardView(r)
-                  : `<div class="item"><strong>${esc(r.Nombre || r.Descripcion || r.Patente || r.IDPago || r.IDRepuesto || r.IDServicio)}</strong><small>${esc(Object.values(r).slice(1, 5).join(" · "))}</small><div><button class="ghost" data-edit="${table}:${esc(r[Object.keys(defs).includes(table) ? { Clientes: "IDCliente", Motos: "IDMoto", Pagos: "IDPago", Servicios: "IDServicio", Repuestos: "IDRepuesto" }[table] : "IDOrden"])}">Editar</button></div></div>`,
+                  ? orderCardView(row)
+                  : `<div class="item"><strong>${esc(row.Nombre || row.Descripcion || row.IDServicio || row.IDRepuesto || row.IDDetalle)}</strong><button class="ghost" data-edit="${esc(table)}:${esc(row[{ Servicios: "IDServicio", Repuestos: "IDRepuesto", Detalle_Trabajo: "IDDetalle" }[table]])}">Editar</button></div>`,
         )
         .join("") || '<div class="empty">No se encontraron registros.</div>';
     wire();
@@ -1686,16 +3434,20 @@ function list(table) {
   $("#showInactiveMotos")?.addEventListener("change", display);
   display();
 }
-function selectOpts(field) {
+
+function selectOpts(field, selectedValue = "") {
   let arr = [];
   if (field === "IDCliente")
     arr = state.db.Clientes.map((x) => [x.IDCliente, x.Nombre]);
   if (field === "IDMoto")
-    arr = state.db.Motos.map((x) => [x.IDMoto, moto(x.IDMoto)]);
+    arr = state.db.Motos.filter(
+      (bike) =>
+        motoIsActive(bike) || String(bike.IDMoto) === String(selectedValue),
+    ).map((x) => [x.IDMoto, `${cliente(x.IDCliente)} · ${moto(x.IDMoto)}`]);
   if (field === "IDOrden")
     arr = state.db.Ordenes_Trabajo.map((x) => [
       x.IDOrden,
-      moto(x.IDMoto) + " · " + x.Estado,
+      `${cliente(recordBike(x.IDMoto)?.IDCliente)} · ${moto(x.IDMoto)} · ${orderStageLabel(x.Estado)}`,
     ]);
   if (field === "Estado") arr = ORDER_STAGES;
   if (field === "Tipo") arr = ["Servicio", "Repuesto"].map((x) => [x, x]);
@@ -1705,79 +3457,132 @@ function selectOpts(field) {
     );
   return arr;
 }
+
 function form(table, id = "", preset = {}) {
+  if (table === "Ordenes_Trabajo" && !id) {
+    openQuickIntake({ motoId: preset.IDMoto || "" });
+    return;
+  }
   state.activeOrderId = "";
   state.galleryRequest += 1;
-  const def = defs[table],
-    pk = {
-      Clientes: "IDCliente",
-      Motos: "IDMoto",
-      Ordenes_Trabajo: "IDOrden",
-      Detalle_Trabajo: "IDDetalle",
-      Pagos: "IDPago",
-      Servicios: "IDServicio",
-      Repuestos: "IDRepuesto",
-    }[table];
-  const existing = (state.db[table] || []).find((x) => x[pk] === id) || {};
+  const def = defs[table];
+  const pk = {
+    Clientes: "IDCliente",
+    Motos: "IDMoto",
+    Ordenes_Trabajo: "IDOrden",
+    Detalle_Trabajo: "IDDetalle",
+    Pagos: "IDPago",
+    Servicios: "IDServicio",
+    Repuestos: "IDRepuesto",
+  }[table];
+  const existing = (state.db[table] || []).find((row) => row[pk] === id) || {};
   const row = { ...existing, ...preset };
+  const fields = def.fields
+    .map((field) => {
+      const value = row[field] ?? "";
+      const opts = selectOpts(field, value);
+      const required = def.required.includes(field) ? "required" : "";
+      const label =
+        {
+          IDCliente: "Cliente",
+          IDMoto: "Moto (cliente · patente)",
+          Anio: "Año",
+          Cilindrada: "Cilindrada (cc)",
+          FechaPrometida: "Fecha prometida",
+          FechaEntrega: "Fecha de entrega",
+          Problema: "Problema informado",
+          PrecioUnitario: "Precio unitario",
+        }[field] || field;
+      const input = opts.length
+        ? `<select name="${field}" ${required}><option value="">Seleccionar…</option>${opts.map(([v, text]) => `<option value="${esc(v)}" ${String(value) === String(v) ? "selected" : ""}>${esc(text)}</option>`).join("")}</select>`
+        : ["Observaciones", "Problema", "Diagnostico"].includes(field)
+          ? `<textarea name="${field}" ${required}>${esc(value)}</textarea>`
+          : `<input name="${field}" value="${esc(field.startsWith("Fecha") ? String(value).slice(0, 10) : value)}" ${required} ${["Importe", "Cantidad", "PrecioUnitario", "PrecioSugerido", "Costo", "PrecioVenta", "Descuento", "Kilometraje", "Cilindrada", "Anio"].includes(field) ? 'type="number" step="any" min="0"' : field.startsWith("Fecha") ? 'type="date"' : 'type="text"'}>`;
+      return `<label>${esc(label)}${input}</label>`;
+    })
+    .join("");
+  const clientNew = table === "Clientes" && !id;
+  const bikeNew = table === "Motos" && !id;
+  const extraButton = clientNew
+    ? '<button type="submit" data-next="moto">GUARDAR Y AGREGAR MOTO →</button>'
+    : bikeNew
+      ? '<button type="submit" data-next="work">GUARDAR Y CREAR TRABAJO →</button>'
+      : "";
   $("#content").innerHTML =
-    `<div class="toolbar"><h2>${id ? "Editar" : "Nuevo"} · ${def.title}</h2><button class="ghost" id="back">Volver</button></div><form id="editForm" class="panel"><div class="fields">${def.fields
-      .map((f) => {
-        const opts = selectOpts(f),
-          value = row[f] ?? "",
-          req = def.required.includes(f) ? "required" : "";
-        const input = opts.length
-          ? `<select name="${f}" ${req}><option value="">Seleccionar…</option>${opts.map(([v, t]) => `<option value="${esc(v)}" ${String(value) === String(v) ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`
-          : f === "Observaciones" || f === "Problema" || f === "Diagnostico"
-            ? `<textarea name="${f}" ${req}>${esc(value)}</textarea>`
-            : `<input name="${f}" value="${esc(value)}" ${req} ${["Importe", "Cantidad", "PrecioUnitario", "PrecioSugerido", "Costo", "PrecioVenta", "Descuento", "Kilometraje", "Cilindrada", "Anio"].includes(f) ? 'type="number" step="any" min="0"' : f.startsWith("Fecha") ? 'type="date"' : 'type="text"'}>`;
-        return `<label>${esc(f)}${input}</label>`;
-      })
-      .join("")}</div><button>Guardar</button></form>`;
-  $("#back").onclick = render;
-  $("#editForm").onsubmit = async (e) => {
-    e.preventDefault();
-
-    const formulario = e.currentTarget;
-    const boton = formulario.querySelector(
-      'button[type="submit"], button:not([type])',
-    );
-
-    // Evitar doble clic o múltiples envíos simultáneos
-    if (formulario.dataset.saving === "true") return;
-
-    formulario.dataset.saving = "true";
-
-    if (boton) {
-      boton.disabled = true;
-      boton.textContent = "Guardando...";
+    `<div class="toolbar"><div><h2>${id ? "Editar" : "Nuevo"} · ${def.title}</h2><p class="muted">${clientNew ? "Registrá el cliente y seguí directamente con su moto." : bikeNew ? "La moto queda asociada al cliente y podés abrir el trabajo inmediatamente." : ""}</p></div><button class="ghost" id="back">← Volver</button></div><form id="editForm" class="panel"><div class="fields">${fields}</div><div class="form-save-actions"><button type="submit" data-next="default">Guardar${id ? " cambios" : ""}</button>${extraButton}</div></form>`;
+  $("#back").onclick = () => {
+    state.view = table;
+    render();
+  };
+  $("#editForm").onsubmit = async (event) => {
+    event.preventDefault();
+    const formEl = event.currentTarget;
+    if (formEl.dataset.saving === "true") return;
+    const next = event.submitter?.dataset.next || "default";
+    const record = Object.fromEntries(new FormData(formEl));
+    if (id) record[pk] = id;
+    if (table === "Clientes") {
+      if (!id) record.Telefono = record.WhatsApp?.trim() || "";
+      else if (record.WhatsApp?.trim() && !existing.Telefono)
+        record.Telefono = record.WhatsApp.trim();
     }
-
-    const obj = Object.fromEntries(new FormData(formulario));
-    if (id) obj[pk] = id;
-
+    if (table === "Motos" && !id) {
+      const duplicate = activeClientBikes(record.IDCliente).find(
+        (bike) =>
+          normalizeSearch(bike.Patente) === normalizeSearch(record.Patente),
+      );
+      if (duplicate)
+        return toast(
+          "Esta patente ya está registrada para este cliente. Abrí la moto existente.",
+        );
+      record.Activo = true;
+    }
+    if (
+      table === "Ordenes_Trabajo" &&
+      record.Estado === "Entregada" &&
+      !record.FechaEntrega
+    )
+      record.FechaEntrega = localToday();
+    formEl.dataset.saving = "true";
+    formEl.querySelectorAll('button[type="submit"]').forEach((button) => {
+      button.disabled = true;
+      button.dataset.originalText = button.textContent;
+      button.textContent = "Guardando...";
+    });
     try {
-      await api("save", { table, record: obj });
-
-      toast("Guardado correctamente");
-
-      await load();
-    } catch (error) {
-      if (error instanceof SessionExpiredError) {
-        showLogin(error.message);
+      const saved = await api("save", { table, record });
+      if (!saved?.[pk])
+        throw Error("El servidor no confirmó el registro guardado.");
+      updateDbRecord(table, saved, pk);
+      toast("Guardado correctamente.");
+      if (clientNew && next === "moto") {
+        await synchronizeAfterSave();
+        state.view = "Motos";
+        form("Motos", "", { IDCliente: saved.IDCliente });
+      } else if (bikeNew && next === "work") {
+        await synchronizeAfterSave();
+        openQuickIntake({ clientId: saved.IDCliente, motoId: saved.IDMoto });
       } else {
-        toast("No se pudo guardar: " + error.message);
+        state.view = table === "Ordenes_Trabajo" ? "Ordenes_Trabajo" : table;
+        await synchronizeAfterSave();
+        if (table === "Clientes") customerDetail(saved.IDCliente);
+        else if (table === "Motos") motoDetail(saved.IDMoto);
+        else if (table === "Ordenes_Trabajo") orderDetail(saved.IDOrden);
+        else if (table === "Detalle_Trabajo") orderDetail(saved.IDOrden);
       }
+    } catch (error) {
+      if (error instanceof SessionExpiredError) showLogin(error.message);
+      else toast(`No se pudo guardar: ${error.message}`);
     } finally {
-      formulario.dataset.saving = "false";
-
-      if (boton) {
-        boton.disabled = false;
-        boton.textContent = "Guardar";
-      }
+      formEl.dataset.saving = "false";
+      formEl.querySelectorAll('button[type="submit"]').forEach((button) => {
+        button.disabled = false;
+        button.textContent = button.dataset.originalText || "Guardar";
+      });
     }
   };
 }
+
 function ensurePhotoGalleryStyles() {
   if (document.getElementById("motomania-photo-gallery-styles")) return;
   const style = document.createElement("style");
@@ -2011,9 +3816,35 @@ function orderDetail(id) {
   `;
 
   $("#content").innerHTML =
-    `<button class="ghost" id="back">← Volver</button><h2>${esc(moto(o.IDMoto))}</h2><div class="panel"><b>${esc(o.Estado)}</b><p>Problema: ${esc(o.Problema)}</p><p>Diagnóstico: ${esc(o.Diagnostico)}</p><p>Kilometraje: ${esc(o.Kilometraje)}</p><button data-edit="Ordenes_Trabajo:${id}">Editar orden</button></div><h2>Servicios y repuestos</h2><div class="list">${d.map((x) => `<div class="item">${esc(x.Tipo)} · ${esc(x.Descripcion)} · ${esc(x.Cantidad)} × ${money(Number(x.PrecioUnitario))} = ${money(Number(x.Subtotal))}</div>`).join("")}</div><button data-concept="${id}">+ Agregar concepto</button><h2>Pagos</h2><div class="panel"><p>Total: ${money(t.total)} · Cobrado: ${money(t.paid)}</p><h2 class="${t.due > 0 ? "danger" : "success"}">Saldo: ${money(t.due)}</h2>${p.map((x) => `<p>${esc(x.Medio)} · ${money(Number(x.Importe))}</p>`).join("")}<button data-pay="${id}">+ Registrar cobro</button></div><h2>Fotografías</h2><div class="panel">${gallery}<form id="photoForm"><div class="fields"><label>Tipo<select name="Tipo"><option>Ingreso</option><option>Diagnóstico</option><option>Reparación</option><option>Entrega</option><option>General</option></select></label><label>Foto<input type="file" name="foto" accept="image/*" capture="environment" required></label></div><button>Subir foto</button></form><small>Las fotos se almacenan de forma privada en Google Drive.</small></div><button id="print" class="ghost">Imprimir comprobante / Guardar PDF</button>`;
+    `<button class="ghost" id="back">← Volver</button><h2>${esc(cliente(recordBike(o.IDMoto)?.IDCliente))} · ${esc(moto(o.IDMoto))}</h2><div class="panel"><b>${esc(o.Estado)}</b><p>Problema: ${esc(o.Problema)}</p><p>Diagnóstico: ${esc(o.Diagnostico)}</p><p>Kilometraje: ${esc(o.Kilometraje)}</p><button data-edit="Ordenes_Trabajo:${id}">Editar orden</button>${!["Entregada", "Cancelada"].includes(o.Estado) ? `<button data-deliver="${esc(id)}">✓ Marcar entregada hoy</button>` : ""}</div><h2>Servicios y repuestos</h2><p class="muted">Agregá los conceptos acá mismo, sin salir de la orden.</p><div class="list order-concepts">${d.map((x) => `<div class="item">${esc(x.Tipo)} · ${esc(x.Descripcion)} · ${esc(x.Cantidad)} × ${money(Number(x.PrecioUnitario))} = ${money(Number(x.Subtotal))}</div>`).join("")}</div><form id="inlineConceptForm" class="panel inline-concept-form"><h3>+ Agregar servicio o repuesto</h3><div class="quick-concept-editor"><label>Tipo<select name="Tipo"><option>Servicio</option><option>Repuesto</option></select></label><label>Descripción<input name="Descripcion" required placeholder="Ej.: cambio de aceite"></label><label>Cantidad<input name="Cantidad" type="number" min="0.01" step="any" value="1" required></label><label>Precio unitario ($)<input name="PrecioUnitario" type="number" min="0" step="any" required></label><button id="inlineConceptSubmit" type="submit">Guardar concepto</button></div></form><h2>Pagos</h2><div class="panel"><p>Total: ${money(t.total)} · Cobrado: ${money(t.paid)}</p><h2 class="${t.due > 0 ? "danger" : "success"}">Saldo: ${money(t.due)}</h2>${p.map((x) => `<p>${esc(x.Medio)} · ${money(Number(x.Importe))}</p>`).join("")}<button data-pay="${id}">+ Registrar cobro</button></div><h2>Fotografías</h2><div class="panel">${gallery}<form id="photoForm"><div class="fields"><label>Tipo<select name="Tipo"><option>Ingreso</option><option>Diagnóstico</option><option>Reparación</option><option>Entrega</option><option>General</option></select></label><label>Foto<input type="file" name="foto" accept="image/*" capture="environment" required></label></div><button>Subir foto</button></form><small>Las fotos se almacenan de forma privada en Google Drive.</small></div><button id="print" class="ghost">Imprimir comprobante / Guardar PDF</button>`;
   $("#back").onclick = render;
   $("#print").onclick = () => printOrder(id);
+  $("#inlineConceptForm").onsubmit = async (event) => {
+    event.preventDefault();
+    const frm = event.currentTarget;
+    if (frm.dataset.saving === "true") return;
+    frm.dataset.saving = "true";
+    const button = $("#inlineConceptSubmit");
+    button.disabled = true;
+    button.textContent = "Guardando...";
+    const record = { ...Object.fromEntries(new FormData(frm)), IDOrden: id };
+    try {
+      const saved = await api("save", { table: "Detalle_Trabajo", record });
+      updateDbRecord("Detalle_Trabajo", saved, "IDDetalle");
+      const scroll = window.scrollY;
+      await synchronizeAfterSave();
+      orderDetail(id);
+      window.scrollTo(0, scroll);
+      toast("Concepto agregado al trabajo.");
+    } catch (error) {
+      if (error instanceof SessionExpiredError) showLogin(error.message);
+      else toast(`No se pudo guardar el concepto: ${error.message}`);
+    } finally {
+      frm.dataset.saving = "false";
+      button.disabled = false;
+      button.textContent = "Guardar concepto";
+    }
+  };
   $("#photoForm input[type=file]").accept = "image/jpeg,image/png,image/webp";
   $("#photoForm").onsubmit = async (e) => {
     e.preventDefault();
@@ -2132,7 +3963,7 @@ function motoDetail(id) {
       .join("") ||
     '<div class="empty">Esta moto todavía no tiene órdenes registradas.</div>';
   $("#content").innerHTML =
-    `<div class="toolbar"><div><h2>${esc(title || "Moto")}</h2><p class="muted">Cliente: ${esc(owner?.Nombre || "Sin cliente")}</p></div><div>${owner ? `<button class="ghost" data-open-client="${esc(owner.IDCliente)}">Ver ficha del cliente</button>` : ""}<button class="ghost" id="back">Volver a motos</button><button data-edit="Motos:${esc(id)}">Editar moto</button><button class="ghost" data-moto-active="${esc(id)}" data-active="${motoIsActive(bike) ? "false" : "true"}">${motoIsActive(bike) ? "Dar de baja" : "Reactivar"}</button></div></div>${!motoIsActive(bike) ? '<p class="muted"><b>● Moto dada de baja</b></p>' : ""}<section class="panel"><h2>Historial de servicios</h2><p class="muted">Órdenes vinculadas a esta moto, desde el ingreso más reciente.</p><div class="list">${history}</div></section>`;
+    `<div class="toolbar"><div><h2>${esc(title || "Moto")}</h2><p class="muted">Cliente: ${esc(owner?.Nombre || "Sin cliente")}</p></div><div>${owner ? `<button class="ghost" data-open-client="${esc(owner.IDCliente)}">Ver ficha del cliente</button>` : ""}<button class="ghost" id="back">Volver a motos</button><button data-edit="Motos:${esc(id)}">Editar moto</button>${motoIsActive(bike) ? `<button data-quick-moto="${esc(id)}">+ NUEVO TRABAJO</button>` : ""}<button class="ghost" data-moto-active="${esc(id)}" data-active="${motoIsActive(bike) ? "false" : "true"}">${motoIsActive(bike) ? "Dar de baja" : "Reactivar"}</button></div></div>${!motoIsActive(bike) ? '<p class="muted"><b>● Moto dada de baja</b></p>' : ""}<section class="panel"><h2>Historial de servicios</h2><p class="muted">Órdenes vinculadas a esta moto, desde el ingreso más reciente.</p><div class="list">${history}</div></section>`;
   $("#back").onclick = () => {
     state.view = "Motos";
     render();
@@ -2193,7 +4024,61 @@ function resumeIntake() {
   }
   startIntake(loadIntakeDraft());
 }
+async function deliverOrder(id) {
+  const order = (state.db.Ordenes_Trabajo || []).find(
+    (row) => row.IDOrden === id,
+  );
+  if (!order || ["Entregada", "Cancelada"].includes(order.Estado)) return;
+  const ok = await confirmModal({
+    title: "¿Marcar trabajo como entregado?",
+    message: `Se guardará la fecha de entrega de hoy (${argentinaDate(localToday())}) y el estado «Entregada».`,
+    cancelText: "Cancelar",
+    confirmText: "Confirmar entrega",
+  });
+  if (!ok) return;
+  await withSession(async () => {
+    const wasDetail = state.activeOrderId === id;
+    const saved = await api("save", {
+      table: "Ordenes_Trabajo",
+      record: { IDOrden: id, Estado: "Entregada", FechaEntrega: localToday() },
+    });
+    updateDbRecord("Ordenes_Trabajo", saved, "IDOrden");
+    await synchronizeAfterSave();
+    if (wasDetail) orderDetail(id);
+    toast("Entrega registrada con fecha de hoy.");
+  });
+}
+
 function wire() {
+  // WhatsApp desde el listado de trabajos
+  document.querySelectorAll("[data-order-whatsapp]").forEach((button) => {
+    button.onclick = () => {
+      openOrderWhatsApp(button.dataset.orderWhatsapp);
+    };
+  });
+
+  document.querySelectorAll("[data-quick-new]").forEach((button) => {
+    button.onclick = () => openQuickIntake();
+  });
+  document.querySelectorAll("[data-quick-client]").forEach((button) => {
+    button.onclick = () =>
+      openQuickIntake({ clientId: button.dataset.quickClient });
+  });
+  document.querySelectorAll("[data-quick-moto]").forEach((button) => {
+    button.onclick = () =>
+      openQuickIntake({ motoId: button.dataset.quickMoto });
+  });
+  document.querySelectorAll("[data-deliver]").forEach((button) => {
+    button.onclick = () => deliverOrder(button.dataset.deliver);
+  });
+  document.querySelectorAll("[data-indicator]").forEach((button) => {
+    button.onclick = () => {
+      const value = button.dataset.indicator;
+      state.orderFilter = value === "clients" ? "" : value;
+      state.view = value === "clients" ? "Clientes" : "Ordenes_Trabajo";
+      render();
+    };
+  });
   document.querySelectorAll("[data-moto-active]").forEach((button) => {
     button.onclick = () =>
       setMotoActive(
