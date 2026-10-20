@@ -77,4 +77,601 @@ nav#nav>button{flex:1 1 130px}
 .nav-more-menu{position:absolute;right:0;top:calc(100% + 7px);z-index:20;display:grid;gap:6px;min-width:190px;padding:9px;border:1px solid #354253;border-radius:12px;background:#151d28;box-shadow:0 18px 36px #0008}
 nav#nav .nav-more-menu button{width:100%;justify-content:flex-start;flex:none}
 @media(max-width:760px){nav#nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}nav#nav>button{width:100%;min-width:0}nav#nav .nav-more{min-width:0}nav#nav .nav-more summary{min-height:45px;padding:8px 3px;font-size:11px}.nav-more-menu{right:0;min-width:170px}nav#nav .nav-more-menu button{flex-direction:row;justify-content:flex-start;padding:10px;font-size:12px}}
- 
+
+/* ==============================================================
+   MOTOMANÍA — FLUJO OPERATIVO V2 · cliente → moto → trabajo
+   Estilos aditivos: se conservan los componentes originales.
+   ============================================================== */
+.dashboard-header{align-items:center;margin-bottom:18px}
+.dashboard-stats{margin-bottom:20px}
+.stat-action{display:block;width:100%;min-height:140px;padding:20px 22px;text-align:left;font-size:inherit;font-weight:inherit;color:var(--text);background:linear-gradient(140deg,#202b39,#171e29);border:1px solid #354354;border-radius:16px;box-shadow:0 12px 30px #0002;transition:transform .17s,border-color .17s,background .17s}
+.stat-action:hover{transform:translateY(-2px);border-color:#8191a4;background:linear-gradient(140deg,#273547,#1d2937);box-shadow:0 12px 30px #0004}
+.stat-action:active{transform:none}
+.stat-action small{display:block;color:#c9d5e3}
+.stat-action .stat-open{display:block;margin-top:8px;color:#8fbaff;font-size:11px;font-weight:750}
+.dashboard-help{display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin-top:7px;padding:16px 20px}
+.dashboard-help strong{font-size:15px;white-space:nowrap}
+.dashboard-help p{flex:1 1 260px;margin:0;font-size:12px}
+.dashboard-help button{flex:none}
+.toolbar-actions,.form-save-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.form-save-actions{margin-top:15px}
+.form-save-actions button[data-next="moto"],.form-save-actions button[data-next="work"]{background:linear-gradient(125deg,#e52638,#b9122a);min-width:220px}
+.form-save-actions button[data-next="default"]:has(+button){background:#253246;border-color:#4a5b70;box-shadow:none}
+.quick-section{margin:0 0 15px;padding:20px 24px}
+.quick-section-head{display:flex;align-items:center;gap:13px;margin-bottom:14px}
+.quick-section-head h2{font-size:19px}
+.quick-section-head p{margin:3px 0 0}
+.quick-step{display:grid;place-items:center;flex:0 0 38px;width:38px;height:38px;border-radius:13px;color:#fff;font-size:18px;font-weight:850;background:linear-gradient(130deg,#e52638,#9f1225);box-shadow:0 5px 18px #be1a3029}
+.quick-tabs{display:flex;gap:9px;flex-wrap:wrap;margin:10px 0 15px}
+.quick-tabs button{min-height:42px;padding:10px 15px}
+.quick-tabs button.selected{border-color:#ff5b6b;box-shadow:0 4px 14px #d2182e29}
+.quick-options{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,235px),1fr));gap:8px;max-height:208px;overflow-y:auto;margin:11px 0;padding:4px;scrollbar-color:#677d94 #15202d;scrollbar-width:thin}
+.quick-choice{padding:12px 13px;text-align:left;background:#111b28;border:1px solid #354355;box-shadow:none;min-height:64px;overflow-wrap:anywhere}
+.quick-choice b{display:block;font-size:13px}
+.quick-choice small{display:block;margin-top:4px;font-size:11px;color:#afc0d2;font-weight:500}
+.quick-choice.selected,.quick-choice.selected:hover{background:#3a212c;border:1px solid #ff5264;box-shadow:0 0 0 1px #ff526424}
+.quick-choice:hover{background:#253246}
+.quick-selected{color:#98eac2;font-size:12px;margin:10px 0 0}
+.quick-section .fields{margin:12px 0;gap:12px}
+.quick-order-fields{grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr))}
+.quick-concept-editor{display:grid;grid-template-columns:110px minmax(190px,2fr) minmax(90px,.6fr) minmax(125px,1fr) auto;gap:10px;align-items:end;margin:13px 0 12px}
+.quick-concept-editor button{align-self:end;white-space:nowrap}
+.quick-catalog-label{max-width:600px;margin:12px 0 14px}
+.quick-jobs{display:grid;gap:8px;margin:15px 0}
+.quick-job{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:12px;padding:11px 12px;border:1px solid #344353;border-radius:10px;background:#111925;color:#dbe5f0;font-size:12px}
+.quick-job span{overflow-wrap:anywhere}
+.quick-job button{min-height:33px;padding:6px 10px;font-size:11px}
+.quick-total{display:flex;align-items:end;justify-content:space-between;gap:15px;flex-wrap:wrap;padding:15px 0 0;border-top:1px solid #384456}
+.quick-total label{width:200px;max-width:100%}
+.quick-total>div{text-align:right}
+.quick-total small{display:block;color:#aab9c8}
+.quick-total b{display:block;font-size:27px;font-variant-numeric:tabular-nums;color:#fff}
+.quick-footer{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;margin:20px 0 45px;padding:17px 20px;border:1px solid #354252;border-radius:14px;background:#18222f}
+.quick-footer p{flex:1 1 230px;max-width:620px;font-size:12px;margin:0}
+.quick-footer button{min-height:50px;font-size:13px}
+.order-list{display:grid;grid-template-columns:1fr;gap:9px}
+.order-list .order-row{display:grid;grid-template-columns:minmax(0,2.5fr) minmax(125px,.9fr) minmax(145px,1fr) auto;align-items:center;gap:12px;padding:12px 16px;border-left:3px solid var(--red)}
+.order-row-main strong{font-size:14px;line-height:1.35}
+.order-row-main .order-meta{margin-top:5px;gap:6px 12px;font-size:11px}
+.order-row-money{display:grid;gap:4px;font-size:11px;color:#aab9c7}
+.order-row-money b{display:inline;color:#e5edf6;white-space:nowrap;font-variant-numeric:tabular-nums}
+.order-row-money b.due{color:#ff8c99}
+.order-row-actions{display:flex;gap:7px;justify-content:flex-end;flex-wrap:wrap}
+.order-row-actions button{margin:0;min-height:36px;padding:8px 11px;font-size:11px;white-space:nowrap}
+.order-row-status .badge{white-space:normal}
+.order-concepts{grid-template-columns:1fr;gap:7px}
+.order-concepts .item{padding:12px}
+.inline-concept-form{margin:14px 0 24px}
+.inline-concept-form h3{font-size:15px}
+.show-inactive{display:flex;align-items:center;gap:9px;margin:0 0 13px;cursor:pointer}
+.show-inactive input{width:19px;height:19px;min-height:19px;margin:0;flex:none}
+.inactive-section{margin:18px 0;border:1px solid #354355;padding:14px;border-radius:12px}
+.inactive-section summary{cursor:pointer;color:#c8d4df;font-weight:750;padding:5px 0}
+.inactive-section .list{margin-top:14px}
+@media(max-width:1070px){.quick-concept-editor{grid-template-columns:repeat(4,minmax(0,1fr))}.quick-concept-editor label:nth-child(2){grid-column:span 2}.quick-concept-editor button{grid-column:1/-1}.order-list .order-row{grid-template-columns:minmax(0,2fr) minmax(110px,1fr) minmax(130px,1fr)}.order-row-actions{grid-column:1/-1;justify-content:flex-start}}
+@media(max-width:760px){.quick-section{padding:15px}.quick-section-head{gap:10px}.quick-step{width:32px;height:32px;flex-basis:32px;font-size:16px}.quick-options{max-height:180px;grid-template-columns:1fr}.quick-concept-editor{grid-template-columns:1fr 1fr;gap:9px}.quick-concept-editor label:nth-child(2){grid-column:1/-1;grid-row:1}.quick-concept-editor button{grid-column:1/-1}.quick-tabs button{flex:1}.quick-footer button{width:100%}.order-list .order-row{grid-template-columns:1fr auto;gap:10px;padding:13px}.order-row-main{grid-column:1/-1}.order-row-status{grid-column:1/-1}.order-row-actions{grid-column:1/-1}.order-row-actions button{flex:1 1 130px}.order-row-money{grid-column:1/-1;grid-template-columns:1fr 1fr}.dashboard-help button{width:100%}.dashboard-stats{grid-template-columns:1fr 1fr}.stat-action{min-height:120px;padding:14px}.stat-action b{font-size:30px}}
+@media(max-width:430px){.form-save-actions{display:grid;grid-template-columns:1fr}.form-save-actions button{width:100%}.quick-concept-editor{grid-template-columns:1fr 1fr}.quick-job{grid-template-columns:1fr auto}.quick-job button{grid-column:1/-1}.quick-total label{width:100%}.quick-total>div{width:100%;text-align:left}.dashboard-stats{gap:9px}.stat-action{min-height:123px}.stat-action small{font-size:11px}}
+
+
+
+/* =====================================================
+   MOTOMANIA - TABLA DE CLIENTES
+   ===================================================== */
+
+.clients-table-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 15px 0;
+}
+
+.clients-table-tools #search {
+  flex: 1 1 300px;
+  max-width: 100%;
+  margin: 0;
+}
+
+.clients-sort-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.clients-sort-button {
+  min-height: 42px;
+  padding: 9px 13px;
+  white-space: nowrap;
+}
+
+.clients-sort-button.is-active {
+  background: #b91b30;
+  border-color: #f24858;
+  color: #fff;
+}
+
+.clients-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid #354252;
+  border-radius: 13px;
+  background: #151d28;
+}
+
+.clients-table {
+  width: 100%;
+  min-width: 790px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.clients-table th {
+  padding: 15px 13px;
+  background: #222e3e;
+  color: #e1eaf5;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.clients-table td {
+  padding: 12px 13px;
+  color: #cbd5e2;
+  border-top: 1px solid #344052;
+  vertical-align: middle;
+}
+
+.clients-table tbody tr:nth-child(even) {
+  background: #1a2431;
+}
+
+.clients-table tbody tr:hover {
+  background: #293649;
+}
+
+.clients-name {
+  font-weight: 800;
+  color: #fff !important;
+}
+
+.clients-number {
+  text-align: center;
+  font-weight: 700;
+}
+
+.clients-date {
+  white-space: nowrap;
+}
+
+.clients-whatsapp {
+  color: #52d5a1;
+  text-decoration: none;
+}
+
+.clients-whatsapp:hover {
+  text-decoration: underline;
+}
+
+.clients-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.clients-row-actions button {
+  min-height: 36px;
+  padding: 8px 11px;
+  font-size: 11px;
+  white-space: nowrap;
+  margin: 0;
+}
+
+.clients-empty {
+  padding: 30px !important;
+  text-align: center;
+  color: #aab6c4;
+}
+
+#clientsCount {
+  margin-top: 12px;
+}
+
+/* Adaptacion para celulares */
+@media (max-width: 760px) {
+
+  .clients-table-tools {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .clients-table-tools #search {
+    flex: none;
+    width: 100%;
+  }
+
+  .clients-sort-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .clients-sort-button {
+    min-width: 0;
+    white-space: normal;
+    font-size: 11px;
+  }
+
+  .clients-table {
+    min-width: 790px;
+  }
+}
+
+
+
+
+/* =========================================================
+   MOTOMANIA - TABLA COMPACTA DE MOTOS
+   ========================================================= */
+
+.motos-table-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 15px 0;
+}
+
+.motos-table-tools #search {
+  flex: 1 1 290px;
+  max-width: 100%;
+  margin: 0;
+}
+
+.motos-sort-actions {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.motos-sort-actions button {
+  min-height: 40px;
+  padding: 9px 13px;
+}
+
+.motos-sort-actions .is-active {
+  background: #b91b30;
+  border-color: #f24858;
+  color: white;
+}
+
+.motos-inactive-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  margin: 15px 0;
+  cursor: pointer;
+}
+
+.motos-inactive-filter input {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 0;
+}
+
+.motos-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid #354252;
+  border-radius: 13px;
+  background: #151d28;
+}
+
+.motos-table {
+  width: 100%;
+  min-width: 960px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.motos-table th {
+  padding: 14px 12px;
+  background: #222e3e;
+  color: #e1eaf5;
+  text-align: left;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.motos-table td {
+  padding: 11px 12px;
+  border-top: 1px solid #344052;
+  color: #cbd5e2;
+  vertical-align: middle;
+}
+
+.motos-table tbody tr:nth-child(even) {
+  background: #1a2431;
+}
+
+.motos-table tbody tr:hover {
+  background: #293649;
+}
+
+.motos-patente {
+  font-weight: 850;
+  color: #fff !important;
+  white-space: nowrap;
+}
+
+.motos-number {
+  font-weight: 750;
+  text-align: center;
+}
+
+.motos-owner-link {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  min-height: 0;
+  color: #a9cbff;
+  text-align: left;
+  font-size: 13px;
+}
+
+.motos-owner-link:hover {
+  background: transparent;
+  box-shadow: none;
+  color: white;
+  text-decoration: underline;
+}
+
+.motos-status {
+  display: inline-block;
+  padding: 5px 9px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.motos-status.activo {
+  background: #173d31;
+  color: #75e4ae;
+}
+
+.motos-status.baja {
+  background: #493039;
+  color: #ff9dab;
+}
+
+.moto-inactiva {
+  opacity: .75;
+}
+
+.motos-row-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.motos-row-actions button {
+  min-height: 35px;
+  padding: 7px 10px;
+  font-size: 11px;
+  white-space: nowrap;
+  margin: 0;
+}
+
+.motos-empty {
+  padding: 30px !important;
+  text-align: center;
+}
+
+/* Moviles */
+
+@media (max-width: 760px) {
+  .motos-table-tools {
+    display: block;
+  }
+
+  .motos-table-tools #search {
+    width: 100%;
+    margin-bottom: 10px;
+  }
+
+  .motos-sort-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .motos-sort-actions button {
+    font-size: 11px;
+    min-width: 0;
+    padding: 8px 5px;
+  }
+
+  .motos-table {
+    min-width: 960px;
+  }
+}
+
+
+
+
+
+/* MOTOMANIA - Opciones de WhatsApp por trabajo */
+
+.wa-order-modal {
+  width: min(100%, 480px);
+}
+
+.wa-order-modal h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.wa-modal-section {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #354252;
+  border-radius: 12px;
+  background: #141c26;
+}
+
+.wa-modal-section p {
+  font-size: 12px;
+  margin: 0 0 14px;
+}
+
+.wa-modal-section label {
+  margin: 10px 0;
+}
+
+.wa-modal-section textarea {
+  min-height: 95px;
+  margin-bottom: 12px;
+}
+
+.wa-modal-section>button {
+  width: 100%;
+}
+
+.order-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 540px) {
+  .wa-modal-section {
+    padding: 12px;
+  }
+}
+
+
+
+
+
+/* ==========================================================
+   MOTOMANÍA — BOTONES WHATSAPP UNIFICADOS
+   Verde normal / Rojo al pasar el mouse
+   Clientes, Motos, Trabajos y Ficha del cliente
+   ========================================================== */
+
+/* 1. Aspecto general de todos los botones WhatsApp */
+
+button[data-contact-whatsapp],
+button[data-moto-whatsapp],
+button[data-order-whatsapp],
+#customerWhatsAppButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+
+  min-height: 37px;
+  padding: 8px 12px;
+
+  background: #168b59 !important;
+  border: 1px solid #39b978 !important;
+  border-radius: 10px;
+
+  color: #ffffff !important;
+  font-size: 12px;
+  font-weight: 750;
+  text-decoration: none;
+
+  box-shadow: 0 4px 12px rgba(22, 139, 89, 0.15) !important;
+
+  cursor: pointer;
+
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+/* 2. Logo de WhatsApp para botones de tablas */
+
+button[data-contact-whatsapp]::before,
+button[data-moto-whatsapp]::before,
+button[data-order-whatsapp]::before {
+  content: "";
+
+  display: inline-block;
+  flex: 0 0 17px;
+
+  width: 17px;
+  height: 17px;
+
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23ffffff' d='M12 2a9.8 9.8 0 0 0-8.4 14.8L2.5 21.5l4.8-1.1A9.8 9.8 0 1 0 12 2Zm0 17.8a8 8 0 0 1-4.1-1.1l-.3-.2-2.8.7.8-2.7-.2-.3A8 8 0 1 1 12 19.8Zm4.4-6c-.2-.1-1.4-.7-1.6-.7s-.3-.1-.5.2-.6.7-.7.8-.3.2-.5.1a6.5 6.5 0 0 1-1.9-1.2 7 7 0 0 1-1.3-1.7c-.1-.2 0-.4.1-.5l.4-.4c.1-.1.2-.3.2-.4s0-.3-.1-.4l-.7-1.5c-.2-.4-.4-.3-.5-.3h-.4c-.2 0-.4.1-.6.3s-.8.8-.8 2 .8 2.3.9 2.5a9.2 9.2 0 0 0 3.5 3.1c.5.2 1 .4 1.3.5.5.2 1 .2 1.4.1.4-.1 1.4-.6 1.6-1.2.2-.6.2-1.1.1-1.2s-.2-.2-.4-.3Z'/%3E%3C/svg%3E");
+
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+}
+
+/* 3. Icono existente en la ficha del cliente */
+
+#customerWhatsAppButton svg {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  color: #ffffff;
+}
+
+/* 4. Efecto hover: pasar de verde a rojo */
+
+button[data-contact-whatsapp]:not(:disabled):hover,
+button[data-moto-whatsapp]:not(:disabled):hover,
+button[data-order-whatsapp]:not(:disabled):hover,
+#customerWhatsAppButton:not(:disabled):hover {
+  background: #d71934 !important;
+  border-color: #f24858 !important;
+  color: #ffffff !important;
+
+  box-shadow: 0 6px 18px rgba(229, 38, 56, 0.28) !important;
+
+  transform: translateY(-1px);
+}
+
+/* 5. Botones sin número WhatsApp disponible */
+
+button[data-contact-whatsapp]:disabled,
+button[data-moto-whatsapp]:disabled,
+button[data-order-whatsapp]:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none !important;
+}
+
+/* 6. Ajuste para pantallas pequeñas */
+
+@media (max-width: 760px) {
+
+  button[data-contact-whatsapp],
+  button[data-moto-whatsapp],
+  button[data-order-whatsapp],
+  #customerWhatsAppButton {
+    min-height: 37px;
+    padding: 7px 10px;
+    font-size: 11px;
+    gap: 5px;
+  }
+
+  button[data-contact-whatsapp]::before,
+  button[data-moto-whatsapp]::before,
+  button[data-order-whatsapp]::before {
+    width: 15px;
+    height: 15px;
+    flex-basis: 15px;
+  }
+}
