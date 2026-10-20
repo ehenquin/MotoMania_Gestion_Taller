@@ -934,6 +934,109 @@ function render() {
   if (state.view === "Caja") return cashDashboard();
   list(state.view);
 }
+
+/* ==========================================================
+   MOTOMANÍA - SELECTOR MODO DÍA / NOCHE
+   Guarda la preferencia en el navegador.
+   No modifica datos ni interrumpe formularios.
+   ========================================================== */
+
+function setupThemeToggle() {
+  const STORAGE_KEY = "motomania.theme";
+
+  const header = document.querySelector(".header-actions");
+
+  if (!header) return;
+
+  // Evitar insertar dos veces el botón.
+  if (document.getElementById("themeToggle")) return;
+
+  // Recuperar preferencia anterior.
+  let savedTheme = "dark";
+
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+
+    if (stored === "light" || stored === "dark") {
+      savedTheme = stored;
+    }
+  } catch (error) {
+    console.warn("No se pudo recuperar el tema guardado.");
+  }
+
+  // Crear botón.
+  const button = document.createElement("button");
+
+  button.id = "themeToggle";
+  button.type = "button";
+  button.className = "ghost header-button theme-toggle";
+
+  button.innerHTML = `
+    <span class="theme-toggle-icon" aria-hidden="true"></span>
+    <span class="theme-toggle-label"></span>
+  `;
+
+  // Ubicar antes del botón Actualizar.
+  const refreshButton = document.getElementById("refresh");
+
+  if (refreshButton && refreshButton.parentElement === header) {
+    header.insertBefore(button, refreshButton);
+  } else {
+    header.appendChild(button);
+  }
+
+  // Aplicar tema elegido.
+  function applyTheme(theme) {
+    const isLight = theme === "light";
+
+    document.documentElement.setAttribute(
+      "data-theme",
+      isLight ? "light" : "dark",
+    );
+
+    button.querySelector(".theme-toggle-icon").textContent = isLight
+      ? "☾"
+      : "☀";
+
+    button.querySelector(".theme-toggle-label").textContent = isLight
+      ? "Modo noche"
+      : "Modo día";
+
+    button.setAttribute(
+      "aria-label",
+      isLight ? "Activar modo noche" : "Activar modo día",
+    );
+
+    button.setAttribute(
+      "title",
+      isLight ? "Cambiar a modo oscuro" : "Cambiar a modo claro",
+    );
+
+    button.setAttribute("aria-pressed", String(isLight));
+  }
+
+  // Aplicar preferencia inicial.
+  applyTheme(savedTheme);
+
+  // Alternar al presionar el botón.
+  button.addEventListener("click", () => {
+    const currentTheme = document.documentElement.getAttribute("data-theme");
+
+    const nextTheme = currentTheme === "light" ? "dark" : "light";
+
+    applyTheme(nextTheme);
+
+    try {
+      localStorage.setItem(STORAGE_KEY, nextTheme);
+    } catch (error) {
+      console.warn("No se pudo guardar la preferencia visual.");
+    }
+  });
+}
+
+// Inicialización del selector visual.
+setupThemeToggle();
+
 function dashboard() {
   const orders = state.db.Ordenes_Trabajo || [];
   const opened = orders.filter(
