@@ -1443,3 +1443,240 @@ html[data-theme="light"] #customerWhatsAppButton:not(:disabled):hover {
     background: #ffffff;
   }
 }
+
+
+/* ==========================================================
+   MOTOMANÍA — TABLA COMPACTA DE SERVICIOS
+   Orden alfabético / precio / edición rápida
+   Compatible con modo oscuro y modo claro
+   ========================================================== */
+
+/* 1. BUSCADOR Y BOTONES DE ORDENAMIENTO */
+
+.services-table-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 15px 0;
+}
+
+.services-table-tools #serviceSearch {
+  flex: 1 1 280px;
+  max-width: 100%;
+  margin: 0;
+}
+
+.services-sort-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.services-sort-button {
+  min-height: 40px;
+  padding: 9px 13px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.services-sort-button.is-active {
+  background: #b91b30;
+  border-color: #f24858;
+  color: #ffffff;
+}
+
+/* 2. TABLA EN MODO OSCURO */
+
+.services-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid #354252;
+  border-radius: 13px;
+  background: #151d28;
+}
+
+.services-table {
+  width: 100%;
+  min-width: 600px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.services-table th {
+  padding: 14px 13px;
+  background: #222e3e;
+  color: #e1eaf5;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.services-table td {
+  padding: 11px 13px;
+  color: #cbd5e2;
+  border-top: 1px solid #344052;
+  vertical-align: middle;
+}
+
+.services-table tbody tr:nth-child(even) {
+  background: #1a2431;
+}
+
+.services-table tbody tr:hover {
+  background: #293649;
+}
+
+.services-name {
+  font-weight: 800;
+  color: #ffffff !important;
+}
+
+.services-price {
+  font-weight: 750;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.services-table td:last-child {
+  width: 110px;
+}
+
+.services-table td:last-child button {
+  min-height: 35px;
+  padding: 7px 12px;
+  font-size: 11px;
+  margin: 0;
+}
+
+/* 3. ESTADOS */
+
+.services-status {
+  display: inline-block;
+  padding: 5px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.services-status.activo {
+  background: #173d31;
+  color: #75e4ae;
+}
+
+.services-status.inactivo {
+  background: #493039;
+  color: #ff9dab;
+}
+
+.service-inactive {
+  opacity: 0.72;
+}
+
+.services-empty {
+  padding: 30px !important;
+  text-align: center;
+  color: #aab6c4;
+}
+
+#servicesCount {
+  margin-top: 12px;
+}
+
+/* ==========================================================
+   4. MODO CLARO
+   ========================================================== */
+
+html[data-theme="light"] .services-table-wrap {
+  background: #ffffff;
+  border-color: #d9e1eb;
+}
+
+html[data-theme="light"] .services-table th {
+  background: #e7edf5;
+  color: #27374b;
+}
+
+html[data-theme="light"] .services-table td {
+  color: #344459;
+  border-top-color: #e0e7ef;
+}
+
+html[data-theme="light"] .services-table tbody tr:nth-child(even) {
+  background: #f5f8fc;
+}
+
+html[data-theme="light"] .services-table tbody tr:nth-child(odd) {
+  background: #ffffff;
+}
+
+html[data-theme="light"] .services-table tbody tr:hover {
+  background: #e9f0fa;
+}
+
+html[data-theme="light"] .services-name {
+  color: #172334 !important;
+}
+
+html[data-theme="light"] .services-price {
+  color: #172334;
+}
+
+html[data-theme="light"] .services-status.activo {
+  background: #dff5e9;
+  color: #126643;
+}
+
+html[data-theme="light"] .services-status.inactivo {
+  background: #ffeaed;
+  color: #b91b30;
+}
+
+/* Mantener rojo el botón de ordenamiento seleccionado */
+
+html[data-theme="light"] .services-sort-button.is-active {
+  background: #b91b30;
+  border-color: #cf2337;
+  color: #ffffff;
+}
+
+/* ==========================================================
+   5. ADAPTACIÓN A CELULARES
+   ========================================================== */
+
+@media (max-width: 760px) {
+
+  .services-table-tools {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .services-table-tools #serviceSearch {
+    flex: none;
+    width: 100%;
+  }
+
+  .services-sort-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .services-sort-button {
+    min-width: 0;
+    white-space: normal;
+    font-size: 11px;
+    padding: 9px 7px;
+  }
+
+  .services-table {
+    min-width: 600px;
+  }
+}
+
+/* Fotografías: selección de cámara o archivo */
+.photo-source-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0}.photo-source-button{position:relative;display:flex;align-items:center;gap:11px;min-height:76px;padding:12px 14px;border:1px solid #46586d;border-radius:12px;background:#1a2533;color:#f2f6fa;cursor:pointer;transition:transform .16s ease,background .16s ease,border-color .16s ease;user-select:none}.photo-source-button:hover{transform:translateY(-1px);background:#253347;border-color:#7188a2}.photo-source-button:focus-within{outline:2px solid #6d9ddd;outline-offset:2px}.photo-source-button strong,.photo-source-button small{display:block}.photo-source-button strong{font-size:14px}.photo-source-button small{margin-top:3px;color:#b7c4d1;font-size:11px;line-height:1.3}.photo-source-camera{border-color:#c83c4f;background:linear-gradient(135deg,#a91c2c,#731724)}.photo-source-camera:hover{background:linear-gradient(135deg,#c2273a,#8b1c2c);border-color:#ff6a79}.photo-source-file{background:#1d2a3b}.photo-source-icon{display:grid;flex:0 0 39px;place-items:center;width:39px;height:39px;border-radius:10px;background:rgba(255,255,255,.16);font-size:21px}.photo-upload-fields{align-items:stretch}.photo-upload-fields .photo-source-button{min-height:70px}.photo-upload-preview{display:flex;align-items:center;gap:11px;min-height:54px;margin:12px 0 0;padding:9px 11px;border:1px dashed #4d6076;border-radius:10px;background:#121b27;font-size:12px;overflow-wrap:anywhere}.photo-upload-preview img{width:48px;height:48px;border-radius:7px;object-fit:cover}.photo-upload-status{min-height:18px;margin:8px 0 0;font-size:12px}.photo-upload-status:not(:empty){color:#b7c4d1}.photo-upload-status.is-error{color:#ff9ba5}@media(max-width:560px){.photo-source-actions{grid-template-columns:1fr}.photo-upload-fields{grid-template-columns:1fr}.photo-upload-fields>label:first-child{grid-column:auto}}
+html[data-theme="light"] .photo-source-button{background:#f5f8fc;border-color:#b9c7d6;color:#182332}html[data-theme="light"] .photo-source-button small{color:#5d6d7d}html[data-theme="light"] .photo-source-camera{background:linear-gradient(135deg,#bc2034,#8d1827);border-color:#a91c2c;color:#fff}html[data-theme="light"] .photo-upload-preview{background:#f8fafc;border-color:#b9c7d6}
