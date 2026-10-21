@@ -25,6 +25,10 @@ const state = {
   cashFilter: { period: "month", start: "", end: "" },
   orderFilter: "",
   quick: null,
+
+  // SERVICIOS - Tabla compacta
+  serviceSort: "alpha",
+  serviceQuery: "",
 };
 const PHOTO_GALLERY_CONCURRENCY = 3;
 const PHOTO_SOURCE_CACHE_LIMIT = 24;
@@ -305,7 +309,21 @@ async function api(action, extra = {}, options = {}) {
 }
 async function load() {
   if (state.loading) return;
+  const tables = [
+    "Clientes",
+    "Motos",
+    "Ordenes_Trabajo",
+    "Detalle_Trabajo",
+    "Pagos",
+    "Movimientos_Caja",
+    "Fotos",
+    "Servicios",
+    "Repuestos",
+  ];
   state.loading = true;
+  state.tableStatus = Object.fromEntries(
+    tables.map((table) => [table, { status: "loading", error: null }]),
+  );
   setConnection("loading");
   const started = performance.now();
   try {
@@ -328,6 +346,15 @@ async function load() {
       Servicios: Array.isArray(db?.Servicios) ? db.Servicios : [],
       Repuestos: Array.isArray(db?.Repuestos) ? db.Repuestos : [],
     };
+    state.tableStatus = Object.fromEntries(
+      tables.map((table) => [
+        table,
+        {
+          status: Array.isArray(db?.[table]) ? "loaded" : "unloaded",
+          error: null,
+        },
+      ]),
+    );
     $("#summary").textContent =
       `${state.db.Clientes.length} clientes · ${state.db.Motos.filter(motoIsActive).length} motos activas · ${state.db.Ordenes_Trabajo.length} órdenes`;
     render();
@@ -335,9 +362,132 @@ async function load() {
     $("#loadMetric").textContent =
       `Sincronizado en ${(elapsed / 1000).toFixed(1)} s`;
     console.info(`[MOTOMANÍA] bootstrap + render: ${elapsed.toFixed(0)} ms`);
+  } catch (error) {
+    state.tableStatus = Object.fromEntries(
+      tables.map((table) => [
+        table,
+        { status: "error", error: error?.message || "Error de lectura" },
+      ]),
+    );
+    throw error;
   } finally {
     state.loading = false;
   }
+}
+async function ensureTablesLoaded(tables, options = {}) {
+  const knownTables = [
+    "Clientes",
+    "Motos",
+    "Ordenes_Trabajo",
+    "Detalle_Trabajo",
+    "Pagos",
+    "Movimientos_Caja",
+    "Fotos",
+    "Servicios",
+    "Repuestos",
+  ];
+  if (!Array.isArray(tables))
+    throw Error("Las tablas solicitadas deben indicarse en un arreglo.");
+  const requested = [...new Set(tables)];
+  const invalid = requested.filter((table) => !knownTables.includes(table));
+  if (invalid.length)
+    throw Error(`Tablas no operativas solicitadas: ${invalid.join(", ")}.`);
+
+  const catalogTables = ["Servicios", "Repuestos"];
+  const requestedCatalogs = requested.filter((table) =>
+    catalogTables.includes(table),
+  );
+  const catalogEntries = requestedCatalogs.map((table) => ({
+    table,
+    status: state.tableStatus?.[table]?.status || "unloaded",
+    error: state.tableStatus?.[table]?.error || "",
+  }));
+  const catalogErrors = catalogEntries.filter(
+    (entry) => entry.status === "error",
+  );
+  const retryCatalogs = options.retry === true && catalogErrors.length > 0;
+  if (catalogErrors.length && !retryCatalogs)
+    throw Error(
+      `Error al cargar las tablas: ${catalogErrors.map((entry) => `${entry.table}${entry.error ? ` (${entry.error})` : ""}`).join(", ")}.`,
+    );
+  const needsCatalogs = requestedCatalogs.some(
+    (table) =>
+      (state.tableStatus?.[table]?.status || "unloaded") === "unloaded",
+  ) || retryCatalogs;
+  const loadingCatalogs = requestedCatalogs.filter(
+    (table) => state.tableStatus?.[table]?.status === "loading",
+  );
+  if (needsCatalogs || loadingCatalogs.length) {
+    let request = ensureTablesLoaded.catalogRequest;
+    if (!request) {
+      if (loadingCatalogs.length)
+        throw Error(
+          `La carga de las tablas está en curso: ${loadingCatalogs.join(", ")}.`,
+        );
+      state.tableStatus ||= {};
+      const requestStatus = {};
+      catalogTables.forEach((table) => {
+        const status = { status: "loading", error: null };
+        state.tableStatus[table] = status;
+        requestStatus[table] = status;
+      });
+      const isCurrentRequest = () =>
+        catalogTables.every(
+          (table) => state.tableStatus?.[table] === requestStatus[table],
+        );
+      request = (async () => {
+        try {
+          const catalogs = await api("loadCatalogs");
+          if (
+            !Array.isArray(catalogs?.Servicios) ||
+            !Array.isArray(catalogs?.Repuestos)
+          )
+            throw Error("El servidor no devolvió catálogos válidos.");
+          if (!isCurrentRequest()) return;
+          state.db.Servicios = catalogs.Servicios;
+          state.db.Repuestos = catalogs.Repuestos;
+          catalogTables.forEach((table) => {
+            state.tableStatus[table] = { status: "loaded", error: null };
+          });
+        } catch (error) {
+          if (!isCurrentRequest()) return;
+          const message = error?.message || "No se pudieron cargar los catálogos.";
+          catalogTables.forEach((table) => {
+            state.tableStatus[table] = { status: "error", error: message };
+          });
+          throw error;
+        }
+      })();
+      ensureTablesLoaded.catalogRequest = request;
+    }
+    try {
+      await request;
+    } finally {
+      if (ensureTablesLoaded.catalogRequest === request)
+        ensureTablesLoaded.catalogRequest = null;
+    }
+  }
+
+  const entries = requested.map((table) => ({
+    table,
+    status: state.tableStatus?.[table]?.status || "unloaded",
+    error: state.tableStatus?.[table]?.error || "",
+  }));
+  const failed = entries.filter((entry) => entry.status === "error");
+  if (failed.length)
+    throw Error(
+      `Error al cargar las tablas: ${failed.map((entry) => `${entry.table}${entry.error ? ` (${entry.error})` : ""}`).join(", ")}.`,
+    );
+  const loading = entries.filter((entry) => entry.status === "loading");
+  if (loading.length)
+    throw Error(
+      `La carga de las tablas está en curso: ${loading.map((entry) => entry.table).join(", ")}.`,
+    );
+  const unloaded = entries.filter((entry) => entry.status !== "loaded");
+  if (unloaded.length)
+    throw Error(
+      `Falta cargar las tablas: ${unloaded.map((entry) => entry.table).join(", ")}. La carga diferida todavía no está disponible.`,
+    );
 }
 async function withSession(action) {
   try {
@@ -536,7 +686,6 @@ async function changeOrderStage(id, nextStage) {
       record.FechaEntrega = localToday();
     const saved = await api("save", { table: "Ordenes_Trabajo", record });
     updateDbRecord("Ordenes_Trabajo", saved, "IDOrden");
-    await synchronizeAfterSave();
     toast("Estado actualizado correctamente.");
     orderDetail(id);
   });
@@ -917,21 +1066,45 @@ function printOrder(id) {
   );
   window.print();
 }
+
 function render() {
   state.galleryAbortController?.abort();
   state.galleryAbortController = null;
   state.activeOrderId = "";
   state.galleryRequest += 1;
+
   document
     .querySelectorAll("#nav button")
     .forEach((b) =>
       b.classList.toggle("active", b.dataset.view === state.view),
     );
-  if (state.view === "dashboard") return dashboard();
-  if (state.view === "quickIntake" && state.quick)
+
+  // Inicio
+  if (state.view === "dashboard") {
+    return dashboard();
+  }
+
+  // Ingreso rápido
+  if (state.view === "quickIntake" && state.quick) {
     return renderQuickIntake(false);
-  if (state.view === "intake" && state.intake) return renderIntake();
-  if (state.view === "Caja") return cashDashboard();
+  }
+
+  // Ingreso guiado
+  if (state.view === "intake" && state.intake) {
+    return renderIntake();
+  }
+
+  // Caja
+  if (state.view === "Caja") {
+    return cashDashboard();
+  }
+
+  // Servicios: nueva tabla compacta
+  if (state.view === "Servicios") {
+    return servicesView();
+  }
+
+  // Clientes, Motos, Trabajos, Repuestos y demás
   list(state.view);
 }
 
@@ -1094,9 +1267,44 @@ function dashboard() {
 }
 
 function cashDate(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  // Fechas YYYY-MM-DD: interpretar como fecha local,
+  // evitando el desplazamiento por UTC.
+  if (typeof value === "string") {
+    const texto = value.trim();
+
+    const match = texto.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+    if (match) {
+      const year = Number(match[1]);
+      const month = Number(match[2]);
+      const day = Number(match[3]);
+
+      const date = new Date(year, month - 1, day);
+
+      // Rechazar fechas inválidas, como 2026-02-30.
+      if (
+        date.getFullYear() !== year ||
+        date.getMonth() !== month - 1 ||
+        date.getDate() !== day
+      ) {
+        return null;
+      }
+
+      return date;
+    }
+  }
+
+  // Conservar el comportamiento anterior para fechas
+  // con hora, timestamps y otros formatos existentes.
   const date = new Date(value);
+
   return Number.isNaN(date.getTime()) ? null : date;
 }
+
 function cashRange(filter) {
   const now = new Date(),
     start = new Date(now),
@@ -1281,7 +1489,7 @@ function intakeBlank() {
     motoId: "",
     moto: {},
     reception: {
-      FechaIngreso: new Date().toISOString().slice(0, 10),
+      FechaIngreso: localToday(),
       Estado: "Recibida",
       Kilometraje: "",
       Problema: "",
@@ -1294,7 +1502,7 @@ function intakeBlank() {
     advance: {
       Importe: "",
       Medio: "Efectivo",
-      Fecha: new Date().toISOString().slice(0, 10),
+      Fecha: localToday(),
       Observaciones: "",
     },
     confirmed: {},
@@ -1403,6 +1611,72 @@ function intakeCatalog() {
 function renderIntake(capture = true) {
   if (capture) captureIntake();
   queueIntakePersist(false);
+  const catalogTables = ["Servicios", "Repuestos"];
+  const catalogStates = catalogTables.map((table) => ({
+    table,
+    status: state.tableStatus?.[table]?.status || "unloaded",
+    error: state.tableStatus?.[table]?.error,
+  }));
+  const catalogErrors = catalogStates.filter(
+    (catalog) => catalog.status === "error",
+  );
+
+  if (catalogErrors.length) {
+    $("#content").innerHTML = `
+      <div class="intake-head">
+        <div>
+          <h2>NUEVO INGRESO</h2>
+          <p class="error">No se pudieron cargar los catálogos: ${catalogErrors.map((catalog) => `${catalog.table}${catalog.error ? ` (${esc(catalog.error)})` : ""}`).join(", ")}.</p>
+          <button type="button" id="retryIntakeCatalogs">Reintentar carga</button>
+        </div>
+      </div>
+    `;
+    $("#retryIntakeCatalogs").onclick = async (event) => {
+      const button = event.currentTarget;
+      if (button.disabled) return;
+      button.disabled = true;
+      button.textContent = "Reintentando carga...";
+      try {
+        await ensureTablesLoaded(["Servicios", "Repuestos"], { retry: true });
+        if (state.view === "intake" && state.intake) render();
+      } catch (_) {
+        if (state.view === "intake" && state.intake) render();
+      }
+    };
+    return;
+  }
+
+  if (catalogStates.some((catalog) => catalog.status === "unloaded")) {
+    $("#content").innerHTML = `
+      <div class="intake-head">
+        <div>
+          <h2>NUEVO INGRESO</h2>
+          <p class="muted">Cargando servicios y repuestos...</p>
+        </div>
+      </div>
+    `;
+    ensureTablesLoaded(["Servicios", "Repuestos"])
+      .then(() => {
+        if (state.view === "intake" && state.intake) render();
+      })
+      .catch(() => {
+        if (state.view === "intake" && state.intake) render();
+      });
+    return;
+  }
+
+  if (catalogStates.some((catalog) => catalog.status === "loading")) {
+    $("#content").innerHTML = `
+      <div class="intake-head">
+        <div>
+          <h2>NUEVO INGRESO</h2>
+          <p class="muted">Cargando servicios y repuestos...</p>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
   const i = state.intake,
     client = intakeClient(),
     bike = intakeMoto();
@@ -1433,7 +1707,7 @@ function renderIntake(capture = true) {
   } else if (i.step === 3) {
     body = `<div class="fields"><label>Fecha de ingreso<input data-intake-reception="FechaIngreso" type="date" value="${esc(i.reception.FechaIngreso)}" required></label><label>Kilometraje<input data-intake-reception="Kilometraje" type="number" min="0" value="${esc(i.reception.Kilometraje)}"></label><label>Estado<input value="Recibida" readonly></label><label>Fecha prometida<input data-intake-reception="FechaPrometida" type="date" value="${esc(i.reception.FechaPrometida)}"></label><label class="intake-wide">Problema informado<textarea data-intake-reception="Problema" required>${esc(i.reception.Problema)}</textarea></label><label class="intake-wide">Observaciones<textarea data-intake-reception="Observaciones">${esc(i.reception.Observaciones)}</textarea></label></div>`;
   } else if (i.step === 4) {
-    body = `<p class="muted">Las fotos se subirán sólo después de crear la orden. Los borradores no conservan archivos seleccionados.</p><div class="intake-photo-actions"><label class="ghost">Tomar foto<input id="intakeCamera" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" multiple hidden></label><label class="ghost">Elegir archivo<input id="intakeFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label></div><div id="intakePreviews" class="intake-previews"></div>`;
+    body = `<p class="muted">Las fotos se subirán sólo después de crear la orden. Los borradores no conservan archivos seleccionados.</p><div class="intake-photo-actions photo-source-actions"><label class="photo-source-button photo-source-camera"><span class="photo-source-icon" aria-hidden="true">📷</span><span><strong>Sacar foto</strong><small>Abre la cámara del dispositivo</small></span><input id="intakeCamera" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" multiple hidden></label><label class="photo-source-button photo-source-file"><span class="photo-source-icon" aria-hidden="true">🖼️</span><span><strong>Subir archivo</strong><small>Elegí una imagen existente</small></span><input id="intakeFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label></div><div id="intakePreviews" class="intake-previews"></div>`;
   } else if (i.step === 5) {
     const catalog = intakeCatalog();
     const conceptControl = catalog.length
@@ -2080,11 +2354,97 @@ function renderQuickIntake(capture = true) {
   if (capture) quickCapture();
   const q = state.quick;
   if (!q) return dashboard();
+  const capturePendingJob = () => {
+    const type = $("#quickJobType");
+    const description = $("#quickJobDescription");
+    const quantity = $("#quickJobQty");
+    const price = $("#quickJobPrice");
+    if (!type && !description && !quantity && !price) return;
+    q.pendingJobDraft = {
+      Tipo: type?.value || "Servicio",
+      Descripcion: description?.value || "",
+      Cantidad: quantity?.value || "",
+      PrecioUnitario: price?.value || "",
+    };
+  };
+  const catalogTables = ["Servicios", "Repuestos"];
+  const catalogStates = catalogTables.map((table) => ({
+    table,
+    status: state.tableStatus?.[table]?.status || "unloaded",
+    error: state.tableStatus?.[table]?.error,
+  }));
+  const catalogErrors = catalogStates.filter(
+    (catalog) => catalog.status === "error",
+  );
+
+  if (catalogErrors.length) {
+    if (!capture) quickCapture();
+    capturePendingJob();
+    $("#content").innerHTML = `
+      <div class="toolbar">
+        <div>
+          <h2>Ingreso rápido</h2>
+          <p class="error">No se pudieron cargar los catálogos: ${catalogErrors.map((catalog) => `${catalog.table}${catalog.error ? ` (${esc(catalog.error)})` : ""}`).join(", ")}.</p>
+          <button type="button" id="retryQuickCatalogs">Reintentar carga</button>
+        </div>
+      </div>
+    `;
+    $("#retryQuickCatalogs").onclick = async (event) => {
+      const button = event.currentTarget;
+      if (button.disabled) return;
+      button.disabled = true;
+      button.textContent = "Reintentando carga...";
+      try {
+        await ensureTablesLoaded(["Servicios", "Repuestos"], { retry: true });
+        if (state.view === "quickIntake" && state.quick) render();
+      } catch (_) {
+        if (state.view === "quickIntake" && state.quick) render();
+      }
+    };
+    return;
+  }
+
+  if (catalogStates.some((catalog) => catalog.status === "unloaded")) {
+    if (!capture) quickCapture();
+    capturePendingJob();
+    $("#content").innerHTML = `
+      <div class="toolbar">
+        <div>
+          <h2>Ingreso rápido</h2>
+          <p class="muted">Cargando servicios y repuestos...</p>
+        </div>
+      </div>
+    `;
+    ensureTablesLoaded(["Servicios", "Repuestos"])
+      .then(() => {
+        if (state.view === "quickIntake" && state.quick) render();
+      })
+      .catch(() => {
+        if (state.view === "quickIntake" && state.quick) render();
+      });
+    return;
+  }
+
+  if (catalogStates.some((catalog) => catalog.status === "loading")) {
+    if (!capture) quickCapture();
+    capturePendingJob();
+    $("#content").innerHTML = `
+      <div class="toolbar">
+        <div>
+          <h2>Ingreso rápido</h2>
+          <p class="muted">Cargando servicios y repuestos...</p>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
   const customer = (state.db.Clientes || []).find(
     (c) => c.IDCliente === q.clientId,
   );
   const bike = recordBike(q.motoId);
   const catalog = intakeCatalog();
+  const pendingJob = q.pendingJobDraft || {};
   const total = Math.max(
     0,
     q.jobs.reduce(
@@ -2109,7 +2469,7 @@ function renderQuickIntake(capture = true) {
     <section class="panel quick-section"><div class="quick-section-head"><span class="quick-step">3</span><div><h2>Trabajo y presupuesto</h2><p class="muted">Cargá el problema, servicios, repuestos y precios antes de guardar.</p></div></div>
       <div class="fields quick-order-fields"><label>Fecha de ingreso<input type="date" data-quick-order-field="FechaIngreso" value="${esc(q.order.FechaIngreso)}"></label><label>Kilometraje<input type="number" min="0" data-quick-order-field="Kilometraje" value="${esc(q.order.Kilometraje)}"></label><label>Problema informado *<textarea data-quick-order-field="Problema">${esc(q.order.Problema)}</textarea></label><label>Diagnóstico (opcional)<textarea data-quick-order-field="Diagnostico">${esc(q.order.Diagnostico)}</textarea></label><label>Fecha prometida (opcional)<input type="date" data-quick-order-field="FechaPrometida" value="${esc(q.order.FechaPrometida)}"></label><label>Observaciones<textarea data-quick-order-field="Observaciones">${esc(q.order.Observaciones)}</textarea></label></div>
       <h3>Servicios y repuestos</h3>
-      <div class="quick-concept-editor"><label>Tipo<select id="quickJobType"><option>Servicio</option><option>Repuesto</option></select></label><label>Descripción<input id="quickJobDescription" placeholder="Ej.: cambio de aceite"></label><label>Cantidad<input id="quickJobQty" type="number" min="0.01" step="any" value="1"></label><label>Precio unitario ($)<input id="quickJobPrice" type="number" min="0" step="any" placeholder="0"></label><button id="quickAddJob" type="button">+ Agregar concepto</button></div>
+      <div class="quick-concept-editor"><label>Tipo<select id="quickJobType"><option ${pendingJob.Tipo === "Servicio" ? "selected" : ""}>Servicio</option><option ${pendingJob.Tipo === "Repuesto" ? "selected" : ""}>Repuesto</option></select></label><label>Descripción<input id="quickJobDescription" value="${esc(pendingJob.Descripcion || "")}" placeholder="Ej.: cambio de aceite"></label><label>Cantidad<input id="quickJobQty" type="number" min="0.01" step="any" value="${esc(pendingJob.Cantidad ?? "1")}"></label><label>Precio unitario ($)<input id="quickJobPrice" type="number" min="0" step="any" value="${esc(pendingJob.PrecioUnitario || "")}" placeholder="0"></label><button id="quickAddJob" type="button">+ Agregar concepto</button></div>
       ${catalog.length ? `<label class="quick-catalog-label">Cargar desde servicios y repuestos<select id="quickCatalog"><option value="">Opcional: elegir un concepto habitual…</option>${catalog.map((c, i) => `<option value="${i}">${esc(c.type)} · ${esc(c.name)} — ${money(Number(c.price || 0))}</option>`).join("")}</select></label>` : ""}
       <div class="quick-jobs">${q.jobs.map((job, index) => `<div class="quick-job"><span>${esc(job.Tipo)} · <b>${esc(job.Descripcion)}</b> · ${esc(job.Cantidad)} × ${money(Number(job.PrecioUnitario))}</span><strong>${money(Number(job.Cantidad) * Number(job.PrecioUnitario))}</strong><button class="ghost" type="button" data-quick-remove="${index}">Quitar</button></div>`).join("") || '<p class="muted">Sin conceptos todavía. Podés agregarlos ahora o después desde la orden.</p>'}</div>
       <div class="quick-total"><label>Descuento ($)<input type="number" step="any" min="0" data-quick-order-field="Descuento" value="${esc(q.order.Descuento)}"></label><div><small>Total presupuestado</small><b id="quickTotal">${money(total)}</b></div></div>
@@ -2133,6 +2493,7 @@ function renderQuickIntake(capture = true) {
   document.querySelectorAll("[data-quick-client-mode]").forEach((button) => {
     button.onclick = () => {
       quickCapture();
+      capturePendingJob();
       q.clientMode = button.dataset.quickClientMode;
       q.clientId = "";
       q.motoId = "";
@@ -2143,6 +2504,7 @@ function renderQuickIntake(capture = true) {
   document.querySelectorAll("[data-quick-client]").forEach((button) => {
     button.onclick = () => {
       quickCapture();
+      capturePendingJob();
       q.clientId = button.dataset.quickClient;
       q.motoId = "";
       q.motoMode = activeClientBikes(q.clientId).length ? "existing" : "new";
@@ -2163,6 +2525,7 @@ function renderQuickIntake(capture = true) {
     document.querySelectorAll("[data-quick-client]").forEach((button) => {
       button.onclick = () => {
         quickCapture();
+        capturePendingJob();
         q.clientId = button.dataset.quickClient;
         q.motoId = "";
         q.motoMode = activeClientBikes(q.clientId).length ? "existing" : "new";
@@ -2173,6 +2536,7 @@ function renderQuickIntake(capture = true) {
   document.querySelectorAll("[data-quick-moto-mode]").forEach((button) => {
     button.onclick = () => {
       quickCapture();
+      capturePendingJob();
       q.motoMode = button.dataset.quickMotoMode;
       q.motoId = "";
       renderQuickIntake(false);
@@ -2181,6 +2545,7 @@ function renderQuickIntake(capture = true) {
   document.querySelectorAll("[data-quick-moto]").forEach((button) => {
     button.onclick = () => {
       quickCapture();
+      capturePendingJob();
       q.motoId = button.dataset.quickMoto;
       renderQuickIntake(false);
     };
@@ -2213,11 +2578,13 @@ function renderQuickIntake(capture = true) {
       Cantidad: quantity,
       PrecioUnitario: price,
     });
+    delete q.pendingJobDraft;
     renderQuickIntake(false);
   };
   document.querySelectorAll("[data-quick-remove]").forEach((button) => {
     button.onclick = () => {
       quickCapture();
+      capturePendingJob();
       q.jobs.splice(Number(button.dataset.quickRemove), 1);
       renderQuickIntake(false);
     };
@@ -2306,11 +2673,14 @@ async function saveQuickIntake() {
     if (!result?.order?.IDOrden)
       throw Error("El servidor no confirmó la orden.");
     const orderId = result.order.IDOrden;
+
     applyIntakeResult(result);
     state.quick = null;
     state.view = "Ordenes_Trabajo";
     state.orderFilter = "";
-    await synchronizeAfterSave();
+
+    // Los registros ya fueron confirmados por el servidor
+    // y actualizados en memoria mediante applyIntakeResult().
     toast("Ingreso completo guardado. Ya podés continuar el trabajo.");
     orderDetail(orderId);
   } catch (error) {
@@ -3438,8 +3808,331 @@ function renderMotosTable() {
   actualizarTabla();
 }
 
+/* ==========================================================
+   MOTOMANÍA - TABLA COMPACTA DE SERVICIOS
+   Orden alfabético y por precio
+   Búsqueda y edición rápida
+   ========================================================== */
+
+/* ==========================================================
+   MOTOMANÍA — TABLA DE SERVICIOS
+   Búsqueda, orden alfabético y orden por precio
+   ========================================================== */
+
+function servicesView() {
+  const servicesStatus = state.tableStatus?.Servicios?.status || "unloaded";
+  const servicesError = state.tableStatus?.Servicios?.error;
+
+  if (servicesStatus === "unloaded") {
+    $("#content").innerHTML = `
+      <div class="toolbar">
+        <div>
+          <h2>Servicios</h2>
+          <p class="muted">Cargando servicios...</p>
+        </div>
+      </div>
+    `;
+    ensureTablesLoaded(["Servicios"])
+      .then(() => {
+        if (state.view === "Servicios") render();
+      })
+      .catch(() => {
+        if (state.view === "Servicios") render();
+      });
+    return;
+  }
+
+  if (servicesStatus === "loading") {
+    $("#content").innerHTML = `
+      <div class="toolbar">
+        <div>
+          <h2>Servicios</h2>
+          <p class="muted">Cargando servicios...</p>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  if (servicesStatus === "error") {
+    $("#content").innerHTML = `
+      <div class="toolbar">
+        <div>
+          <h2>Servicios</h2>
+          <p class="error">No se pudieron cargar los servicios${servicesError ? `: ${esc(servicesError)}` : "."}</p>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const servicios = [...(state.db.Servicios || [])];
+
+  const estaActivo = (servicio) => {
+    return !["false", "0", "no", "inactivo", "baja"].includes(
+      String(servicio.Activo ?? "")
+        .trim()
+        .toLowerCase(),
+    );
+  };
+
+  const precioNumerico = (valor) => {
+    if (valor === "" || valor == null) return null;
+
+    let texto = String(valor).trim().replace(/[$\s]/g, "");
+
+    if (texto.includes(",") && texto.includes(".")) {
+      texto = texto.replace(/\./g, "").replace(",", ".");
+    } else if (texto.includes(",")) {
+      texto = texto.replace(",", ".");
+    } else if (/^\d{1,3}(\.\d{3})+$/.test(texto)) {
+      texto = texto.replace(/\./g, "");
+    }
+
+    const numero = Number(texto);
+
+    return Number.isFinite(numero) && numero >= 0 ? numero : null;
+  };
+
+  const compararNombres = (a, b) =>
+    String(a.Nombre || "").localeCompare(String(b.Nombre || ""), "es", {
+      sensitivity: "base",
+      numeric: true,
+    });
+
+  $("#content").innerHTML = `
+    <div class="toolbar">
+      <div>
+        <h2>Servicios</h2>
+        <p class="muted">
+          ${servicios.length} servicios registrados
+        </p>
+      </div>
+
+      <button type="button" data-add="Servicios">
+        + Nuevo servicio
+      </button>
+    </div>
+
+    <div class="services-table-tools">
+
+      <input
+        id="serviceSearch"
+        type="search"
+        placeholder="Buscar servicio..."
+        autocomplete="off"
+        value="${esc(state.serviceQuery || "")}"
+      >
+
+      <div class="services-sort-actions">
+
+        <button
+          type="button"
+          id="sortServicesAlpha"
+          class="ghost services-sort-button"
+        >
+          A–Z Orden alfabético
+        </button>
+
+        <button
+          type="button"
+          id="sortServicesPrice"
+          class="ghost services-sort-button"
+        >
+          $ Orden por precio
+        </button>
+
+      </div>
+    </div>
+
+    <div class="services-table-wrap">
+      <table class="services-table">
+
+        <thead>
+          <tr>
+            <th>Servicio</th>
+            <th>Precio sugerido</th>
+            <th>Estado</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+
+        <tbody id="servicesRows"></tbody>
+
+      </table>
+    </div>
+
+    <p id="servicesCount" class="muted"></p>
+  `;
+
+  function actualizarTabla() {
+    const terminos = String(state.serviceQuery || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(normalizeSearch);
+
+    const resultado = servicios.filter((servicio) => {
+      const texto = normalizeSearch(
+        [servicio.Nombre, servicio.IDServicio, servicio.PrecioSugerido].join(
+          " ",
+        ),
+      );
+
+      return terminos.every((termino) => texto.includes(termino));
+    });
+
+    resultado.sort((a, b) => {
+      if (state.serviceSort === "price") {
+        const precioA = precioNumerico(a.PrecioSugerido);
+        const precioB = precioNumerico(b.PrecioSugerido);
+
+        if (precioA === null && precioB !== null) return 1;
+        if (precioB === null && precioA !== null) return -1;
+
+        if (precioA !== null && precioB !== null) {
+          if (precioA !== precioB) return precioA - precioB;
+        }
+      }
+
+      return compararNombres(a, b);
+    });
+
+    $("#servicesRows").innerHTML =
+      resultado
+        .map((servicio) => {
+          const activo = estaActivo(servicio);
+          const precio = precioNumerico(servicio.PrecioSugerido);
+
+          return `
+        <tr class="${activo ? "" : "service-inactive"}">
+
+          <td class="services-name">
+            ${esc(servicio.Nombre || "Sin nombre")}
+          </td>
+
+          <td class="services-price">
+            ${
+              precio === null
+                ? '<span class="muted">Sin precio</span>'
+                : money(precio)
+            }
+          </td>
+
+          <td>
+            <span class="services-status ${activo ? "activo" : "inactivo"}">
+              ${activo ? "Activo" : "Inactivo"}
+            </span>
+          </td>
+
+          <td>
+            <button
+              type="button"
+              class="ghost"
+              data-edit="Servicios:${esc(servicio.IDServicio)}"
+            >
+              Editar
+            </button>
+          </td>
+
+        </tr>
+      `;
+        })
+        .join("") ||
+      `
+      <tr>
+        <td colspan="4" class="services-empty">
+          No se encontraron servicios.
+        </td>
+      </tr>
+    `;
+
+    // Contador corregido
+    $("#servicesCount").textContent =
+      `${resultado.length} servicio(s) mostrados`;
+
+    $("#sortServicesAlpha").classList.toggle(
+      "is-active",
+      state.serviceSort !== "price",
+    );
+
+    $("#sortServicesPrice").classList.toggle(
+      "is-active",
+      state.serviceSort === "price",
+    );
+
+    // Reconectar botones de edición y alta
+    wire();
+  }
+
+  $("#serviceSearch").addEventListener("input", (event) => {
+    state.serviceQuery = event.target.value;
+    actualizarTabla();
+  });
+
+  $("#sortServicesAlpha").onclick = () => {
+    state.serviceSort = "alpha";
+    actualizarTabla();
+  };
+
+  $("#sortServicesPrice").onclick = () => {
+    state.serviceSort = "price";
+    actualizarTabla();
+  };
+
+  actualizarTabla();
+}
+
 function list(table) {
   if (!defs[table]) return;
+
+  if (table === "Repuestos") {
+    const partsStatus = state.tableStatus?.Repuestos?.status || "unloaded";
+    const partsError = state.tableStatus?.Repuestos?.error;
+
+    if (partsStatus === "unloaded") {
+      $("#content").innerHTML = `
+        <div class="toolbar">
+          <div>
+            <h2>Repuestos</h2>
+            <p class="muted">Cargando repuestos...</p>
+          </div>
+        </div>
+      `;
+      ensureTablesLoaded(["Repuestos"])
+        .then(() => {
+          if (state.view === "Repuestos") render();
+        })
+        .catch(() => {
+          if (state.view === "Repuestos") render();
+        });
+      return;
+    }
+
+    if (partsStatus === "loading") {
+      $("#content").innerHTML = `
+        <div class="toolbar">
+          <div>
+            <h2>Repuestos</h2>
+            <p class="muted">Cargando repuestos...</p>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    if (partsStatus === "error") {
+      $("#content").innerHTML = `
+        <div class="toolbar">
+          <div>
+            <h2>Repuestos</h2>
+            <p class="error">No se pudieron cargar los repuestos${partsError ? `: ${esc(partsError)}` : "."}</p>
+          </div>
+        </div>
+      `;
+      return;
+    }
+  }
 
   if (table === "Motos") {
     renderMotosTable();
@@ -3920,6 +4613,59 @@ function orderDetail(id) {
 
   $("#content").innerHTML =
     `<button class="ghost" id="back">← Volver</button><h2>${esc(cliente(recordBike(o.IDMoto)?.IDCliente))} · ${esc(moto(o.IDMoto))}</h2><div class="panel"><b>${esc(o.Estado)}</b><p>Problema: ${esc(o.Problema)}</p><p>Diagnóstico: ${esc(o.Diagnostico)}</p><p>Kilometraje: ${esc(o.Kilometraje)}</p><button data-edit="Ordenes_Trabajo:${id}">Editar orden</button>${!["Entregada", "Cancelada"].includes(o.Estado) ? `<button data-deliver="${esc(id)}">✓ Marcar entregada hoy</button>` : ""}</div><h2>Servicios y repuestos</h2><p class="muted">Agregá los conceptos acá mismo, sin salir de la orden.</p><div class="list order-concepts">${d.map((x) => `<div class="item">${esc(x.Tipo)} · ${esc(x.Descripcion)} · ${esc(x.Cantidad)} × ${money(Number(x.PrecioUnitario))} = ${money(Number(x.Subtotal))}</div>`).join("")}</div><form id="inlineConceptForm" class="panel inline-concept-form"><h3>+ Agregar servicio o repuesto</h3><div class="quick-concept-editor"><label>Tipo<select name="Tipo"><option>Servicio</option><option>Repuesto</option></select></label><label>Descripción<input name="Descripcion" required placeholder="Ej.: cambio de aceite"></label><label>Cantidad<input name="Cantidad" type="number" min="0.01" step="any" value="1" required></label><label>Precio unitario ($)<input name="PrecioUnitario" type="number" min="0" step="any" required></label><button id="inlineConceptSubmit" type="submit">Guardar concepto</button></div></form><h2>Pagos</h2><div class="panel"><p>Total: ${money(t.total)} · Cobrado: ${money(t.paid)}</p><h2 class="${t.due > 0 ? "danger" : "success"}">Saldo: ${money(t.due)}</h2>${p.map((x) => `<p>${esc(x.Medio)} · ${money(Number(x.Importe))}</p>`).join("")}<button data-pay="${id}">+ Registrar cobro</button></div><h2>Fotografías</h2><div class="panel">${gallery}<form id="photoForm"><div class="fields"><label>Tipo<select name="Tipo"><option>Ingreso</option><option>Diagnóstico</option><option>Reparación</option><option>Entrega</option><option>General</option></select></label><label>Foto<input type="file" name="foto" accept="image/*" capture="environment" required></label></div><button>Subir foto</button></form><small>Las fotos se almacenan de forma privada en Google Drive.</small></div><button id="print" class="ghost">Imprimir comprobante / Guardar PDF</button>`;
+  const photoForm = $("#photoForm");
+  const photoCamera = photoForm.querySelector('input[name="foto"]');
+  const photoFields = photoForm.querySelector(".fields");
+  const cameraLabel = photoCamera.closest("label");
+  photoCamera.name = "photoCamera";
+  photoCamera.id = "orderPhotoCamera";
+  photoCamera.accept = "image/jpeg,image/png,image/webp";
+  photoCamera.required = false;
+  photoCamera.hidden = true;
+  cameraLabel.className = "photo-source-button photo-source-camera";
+  cameraLabel.innerHTML =
+    '<span class="photo-source-icon" aria-hidden="true">📷</span><span><strong>Sacar foto</strong><small>Abre la cámara del dispositivo</small></span>';
+  cameraLabel.append(photoCamera);
+  const photoFile = document.createElement("input");
+  photoFile.type = "file";
+  photoFile.name = "photoFile";
+  photoFile.id = "orderPhotoFile";
+  photoFile.accept = "image/jpeg,image/png,image/webp";
+  photoFile.hidden = true;
+  const fileLabel = document.createElement("label");
+  fileLabel.className = "photo-source-button photo-source-file";
+  fileLabel.innerHTML =
+    '<span class="photo-source-icon" aria-hidden="true">🖼️</span><span><strong>Subir archivo</strong><small>Elegí una imagen existente</small></span>';
+  fileLabel.append(photoFile);
+  photoFields.classList.add("photo-upload-fields");
+  photoFields.append(fileLabel);
+  const photoPreview = document.createElement("div");
+  photoPreview.id = "orderPhotoPreview";
+  photoPreview.className = "photo-upload-preview muted";
+  photoPreview.textContent = "Todavía no seleccionaste una foto.";
+  const photoUploadStatus = document.createElement("p");
+  photoUploadStatus.id = "orderPhotoUploadStatus";
+  photoUploadStatus.className = "photo-upload-status muted";
+  photoFields.after(photoPreview, photoUploadStatus);
+  const previewSelectedPhoto = (file, otherInput) => {
+    if (!file) return;
+    otherInput.value = "";
+    const image = document.createElement("img");
+    const url = URL.createObjectURL(file);
+    image.src = url;
+    image.alt = "Previsualización de la fotografía seleccionada";
+    image.onload = () => URL.revokeObjectURL(url);
+    const description = document.createElement("span");
+    description.textContent = file.name;
+    photoPreview.classList.remove("muted");
+    photoPreview.replaceChildren(image, description);
+  };
+  photoCamera.addEventListener("change", () =>
+    previewSelectedPhoto(photoCamera.files[0], photoFile),
+  );
+  photoFile.addEventListener("change", () =>
+    previewSelectedPhoto(photoFile.files[0], photoCamera),
+  );
   $("#back").onclick = render;
   $("#print").onclick = () => printOrder(id);
   $("#inlineConceptForm").onsubmit = async (event) => {
@@ -3948,13 +4694,20 @@ function orderDetail(id) {
       button.textContent = "Guardar concepto";
     }
   };
-  $("#photoForm input[type=file]").accept = "image/jpeg,image/png,image/webp";
-  $("#photoForm").onsubmit = async (e) => {
+  photoForm.onsubmit = async (e) => {
     e.preventDefault();
-    const file = e.target.foto.files[0];
-    if (!file) return;
-    if (!isSupportedPhotoFile(file))
+    const file = photoCamera.files[0] || photoFile.files[0];
+    if (!file) {
+      photoUploadStatus.classList.add("is-error");
+      photoUploadStatus.textContent = "Seleccioná una foto antes de subirla.";
+      return;
+    }
+    if (!isSupportedPhotoFile(file)) {
+      photoUploadStatus.classList.add("is-error");
+      photoUploadStatus.textContent =
+        "Solo se admiten fotografías JPG, PNG o WEBP.";
       return toast("Solo se admiten fotografías JPG, PNG o WEBP.");
+    }
     const submit = e.target.querySelector(
       "button[type=submit], button:not([type])",
     );
@@ -3963,6 +4716,11 @@ function orderDetail(id) {
       submit.disabled = true;
       submit.textContent = "Subiendo fotografía…";
     }
+    photoForm.querySelectorAll('input[type="file"]').forEach((input) => {
+      input.disabled = true;
+    });
+    photoUploadStatus.classList.remove("is-error");
+    photoUploadStatus.textContent = "Procesando y subiendo fotografía…";
     try {
       const base64 = await shrink(file);
       const saved = confirmUploadedPhoto(
@@ -3981,15 +4739,26 @@ function orderDetail(id) {
       );
       if (existing < 0) state.db.Fotos.push(saved);
       else state.db.Fotos[existing] = saved;
+      photoUploadStatus.classList.remove("is-error");
+      photoUploadStatus.textContent = "Fotografía guardada correctamente.";
       toast("Fotografía guardada correctamente.");
       orderDetail(id);
     } catch (error) {
       if (error instanceof SessionExpiredError) showLogin(error.message);
-      else toast(`No se pudo guardar la fotografía. ${error.message}`);
+      else {
+        photoUploadStatus.classList.add("is-error");
+        photoUploadStatus.textContent = `No se pudo guardar la fotografía. ${error.message}`;
+        toast(`No se pudo guardar la fotografía. ${error.message}`);
+      }
     } finally {
-      if ($("#photoForm button")) {
-        $("#photoForm button").disabled = false;
-        $("#photoForm button").textContent = "Subir foto";
+      if (photoForm.isConnected) {
+        photoForm.querySelectorAll('input[type="file"]').forEach((input) => {
+          input.disabled = false;
+        });
+        if (submit) {
+          submit.disabled = false;
+          submit.textContent = "Subir foto";
+        }
       }
     }
   };
@@ -4146,7 +4915,6 @@ async function deliverOrder(id) {
       record: { IDOrden: id, Estado: "Entregada", FechaEntrega: localToday() },
     });
     updateDbRecord("Ordenes_Trabajo", saved, "IDOrden");
-    await synchronizeAfterSave();
     if (wasDetail) orderDetail(id);
     toast("Entrega registrada con fecha de hoy.");
   });
@@ -4266,7 +5034,7 @@ function wire() {
       (b.onclick = () =>
         form("Pagos", "", {
           IDOrden: b.dataset.pay,
-          Fecha: new Date().toISOString().slice(0, 10),
+          Fecha: localToday(),
           Medio: "Efectivo",
         })),
   );
