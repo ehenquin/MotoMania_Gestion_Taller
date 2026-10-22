@@ -19,6 +19,7 @@ const state = {
   loading: false,
   galleryRequest: 0,
   activeOrderId: "",
+  paymentOrderContextId: "",
   photoSources: new Map(),
   photoRequests: new Map(),
   galleryAbortController: null,
@@ -410,10 +411,11 @@ async function ensureTablesLoaded(tables, options = {}) {
     throw Error(
       `Error al cargar las tablas: ${catalogErrors.map((entry) => `${entry.table}${entry.error ? ` (${entry.error})` : ""}`).join(", ")}.`,
     );
-  const needsCatalogs = requestedCatalogs.some(
-    (table) =>
-      (state.tableStatus?.[table]?.status || "unloaded") === "unloaded",
-  ) || retryCatalogs;
+  const needsCatalogs =
+    requestedCatalogs.some(
+      (table) =>
+        (state.tableStatus?.[table]?.status || "unloaded") === "unloaded",
+    ) || retryCatalogs;
   const loadingCatalogs = requestedCatalogs.filter(
     (table) => state.tableStatus?.[table]?.status === "loading",
   );
@@ -451,7 +453,8 @@ async function ensureTablesLoaded(tables, options = {}) {
           });
         } catch (error) {
           if (!isCurrentRequest()) return;
-          const message = error?.message || "No se pudieron cargar los catálogos.";
+          const message =
+            error?.message || "No se pudieron cargar los catálogos.";
           catalogTables.forEach((table) => {
             state.tableStatus[table] = { status: "error", error: message };
           });
@@ -1328,9 +1331,25 @@ function cashRange(filter) {
 }
 function cashRecords(filter = state.cashFilter) {
   const { start, end } = cashRange(filter);
+  const ordersById = new Map(
+    (state.db.Ordenes_Trabajo || []).map((order) => [order.IDOrden, order]),
+  );
+  const bikesById = new Map(
+    (state.db.Motos || []).map((bike) => [bike.IDMoto, bike]),
+  );
+  const clientsById = new Map(
+    (state.db.Clientes || []).map((client) => [client.IDCliente, client]),
+  );
+  const relatedOrder = (orderId) => {
+    const order = ordersById.get(orderId);
+    const bike = order ? bikesById.get(order.IDMoto) : null;
+    const client = bike ? clientsById.get(bike.IDCliente) : null;
+    return { order, bike, client };
+  };
   const payments = (state.db.Pagos || []).map((payment) => ({
     key: `payment:${payment.IDPago}`,
     source: "payment",
+    ...payment,
     Fecha: payment.Fecha,
     Tipo: "Ingreso",
     Categoria: "Cobro de orden",
@@ -1338,12 +1357,14 @@ function cashRecords(filter = state.cashFilter) {
     Importe: Number(payment.Importe || 0),
     Medio: payment.Medio || "Sin medio",
     Responsable: "",
+    ...relatedOrder(payment.IDOrden),
   }));
   const manual = (state.db.Movimientos_Caja || []).map((movement) => ({
     key: `movement:${movement.IDMovimiento}`,
     source: "manual",
     ...movement,
     Importe: Number(movement.Importe || 0),
+    ...relatedOrder(movement.IDOrden),
   }));
   const unique = new Map();
   [...payments, ...manual].forEach((record) => unique.set(record.key, record));
@@ -1375,6 +1396,38 @@ function cashDateLabel(value) {
     ? date.toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })
     : "Fecha inválida";
 }
+function cashRecordCard(record) {
+  const isExpense = record.Tipo === "Egreso";
+  const order = record.order;
+  const bike = record.bike;
+  const client = record.client;
+  const title =
+    record.source === "payment"
+      ? "Cobro de orden"
+      : isExpense
+        ? `Egreso${record.Categoria ? ` · ${record.Categoria}` : ""}`
+        : record.Categoria || "Ingreso";
+  const detailLines = [];
+  if (order) {
+    if (client?.Nombre) detailLines.push(["Cliente", client.Nombre]);
+    const bikeName = [bike?.Marca, bike?.Modelo].filter(Boolean).join(" ");
+    if (bikeName) detailLines.push(["Moto", bikeName]);
+    if (bike?.Patente) detailLines.push(["Patente", bike.Patente]);
+    detailLines.push(["Orden", order.IDOrden]);
+    if (order.Problema) detailLines.push(["Trabajo", order.Problema]);
+    if (order.Estado) detailLines.push(["Estado", order.Estado]);
+  } else {
+    if (record.Categoria) detailLines.push(["Concepto", record.Categoria]);
+    if (record.Descripcion) detailLines.push(["Descripción", record.Descripcion]);
+    const counterparty =
+      record.Proveedor || record.Destinatario || record.Responsable || "";
+    if (counterparty) detailLines.push(["Responsable", counterparty]);
+    if (record.Referencia || record.Comprobante)
+      detailLines.push(["Referencia", record.Referencia || record.Comprobante]);
+  }
+  const observation = record.Observaciones || record.Observacion || "";
+  return `<article class="cash-row ${isExpense ? "is-expense" : "is-income"}"><div class="cash-row-main"><div><span class="badge cash-badge ${record.source === "payment" ? "cash-payment" : ""}">${esc(record.source === "payment" ? "Cobro de orden" : record.Tipo)}</span><strong>${esc(title)}</strong></div><b class="${isExpense ? "negative" : "positive"}">${isExpense ? "−" : "+"}${money(record.Importe)}</b></div>${detailLines.length ? `<dl class="cash-row-info">${detailLines.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>` : ""}${observation ? `<p class="cash-row-note">${esc(observation)}</p>` : ""}<div class="cash-row-meta"><span>${esc(cashDateLabel(record.Fecha))}</span><span>${esc(record.Medio || "Sin medio")}</span></div>${order ? `<div class="cash-row-actions"><button class="ghost" type="button" data-cash-order="${esc(order.IDOrden)}">Ver orden</button></div>` : ""}</article>`;
+}
 function cashDashboard() {
   const records = cashRecords(),
     summary = cashSummary(records),
@@ -1383,7 +1436,7 @@ function cashDashboard() {
     a.localeCompare(b, "es"),
   );
   $("#content").innerHTML =
-    `<div class="toolbar cash-toolbar"><div><h2>Caja simple</h2><p class="muted">Cobros de órdenes y movimientos manuales. El resultado no representa ganancia contable.</p></div><div class="cash-actions"><button data-cash-add="Ingreso">+ Registrar ingreso</button><button class="ghost" data-cash-add="Egreso">− Registrar egreso</button></div></div><section class="cash-filters panel"><label>Período<select id="cashPeriod"><option value="today" ${filter.period === "today" ? "selected" : ""}>Hoy</option><option value="week" ${filter.period === "week" ? "selected" : ""}>Esta semana</option><option value="month" ${filter.period === "month" ? "selected" : ""}>Este mes</option><option value="custom" ${filter.period === "custom" ? "selected" : ""}>Rango personalizado</option></select></label><label class="cash-custom" ${filter.period === "custom" ? "" : "hidden"}>Desde<input id="cashStart" type="date" value="${esc(filter.start)}"></label><label class="cash-custom" ${filter.period === "custom" ? "" : "hidden"}>Hasta<input id="cashEnd" type="date" value="${esc(filter.end)}"></label></section><section class="cash-stats"><article class="cash-stat income"><small>Ingresos del período</small><b>${money(summary.income)}</b><span>${money(summary.payment)} cobros · ${money(summary.manualIncome)} manuales</span></article><article class="cash-stat expense"><small>Egresos del período</small><b>${money(summary.expense)}</b><span>Gastos y retiros manuales</span></article><article class="cash-stat net"><small>Resultado neto</small><b>${money(summary.net)}</b><span>Ingresos menos egresos</span></article></section><section class="panel cash-mediums"><div class="toolbar"><h2>Flujo neto por medio</h2><small class="muted">Efectivo registrado, sin saldo de apertura.</small></div><div class="cash-medium-list">${mediums.map(([medium, amount]) => `<div><span>${esc(medium)}</span><b class="${amount < 0 ? "negative" : ""}">${money(amount)}</b></div>`).join("") || '<p class="muted">No hay movimientos para este período.</p>'}</div></section><section class="toolbar"><div><h2>Movimientos</h2><p class="muted">${records.length} movimiento${records.length === 1 ? "" : "s"} en el período.</p></div></section><section class="cash-list">${records.map((record) => `<article class="cash-row ${record.Tipo === "Egreso" ? "is-expense" : "is-income"}"><div class="cash-row-main"><div><span class="badge cash-badge ${record.source === "payment" ? "cash-payment" : ""}">${record.source === "payment" ? "Cobro de orden" : esc(record.Tipo)}</span><strong>${esc(record.Categoria || "Sin categoría")}</strong><p>${esc(record.Descripcion || "Sin descripción")}</p></div><b class="${record.Tipo === "Egreso" ? "negative" : "positive"}">${record.Tipo === "Egreso" ? "−" : "+"}${money(record.Importe)}</b></div><div class="cash-row-meta"><span>${esc(cashDateLabel(record.Fecha))}</span><span>${esc(record.Medio || "Sin medio")}</span>${record.Responsable ? `<span>${esc(record.Responsable)}</span>` : ""}</div></article>`).join("") || '<div class="empty">No hay cobros ni movimientos en el período seleccionado.</div>'}</section>`;
+    `<div class="toolbar cash-toolbar"><div><h2>Caja simple</h2><p class="muted">Cobros de órdenes y movimientos manuales. El resultado no representa ganancia contable.</p></div><div class="cash-actions"><button data-cash-add="Ingreso">+ Registrar ingreso</button><button class="ghost" data-cash-add="Egreso">− Registrar egreso</button></div></div><section class="cash-filters panel"><label>Período<select id="cashPeriod"><option value="today" ${filter.period === "today" ? "selected" : ""}>Hoy</option><option value="week" ${filter.period === "week" ? "selected" : ""}>Esta semana</option><option value="month" ${filter.period === "month" ? "selected" : ""}>Este mes</option><option value="custom" ${filter.period === "custom" ? "selected" : ""}>Rango personalizado</option></select></label><label class="cash-custom" ${filter.period === "custom" ? "" : "hidden"}>Desde<input id="cashStart" type="date" value="${esc(filter.start)}"></label><label class="cash-custom" ${filter.period === "custom" ? "" : "hidden"}>Hasta<input id="cashEnd" type="date" value="${esc(filter.end)}"></label></section><section class="cash-stats"><article class="cash-stat income"><small>Ingresos del período</small><b>${money(summary.income)}</b><span>${money(summary.payment)} cobros · ${money(summary.manualIncome)} manuales</span></article><article class="cash-stat expense"><small>Egresos del período</small><b>${money(summary.expense)}</b><span>Gastos y retiros manuales</span></article><article class="cash-stat net"><small>Resultado neto</small><b>${money(summary.net)}</b><span>Ingresos menos egresos</span></article></section><section class="panel cash-mediums"><div class="toolbar"><h2>Flujo neto por medio</h2><small class="muted">Efectivo registrado, sin saldo de apertura.</small></div><div class="cash-medium-list">${mediums.map(([medium, amount]) => `<div><span>${esc(medium)}</span><b class="${amount < 0 ? "negative" : ""}">${money(amount)}</b></div>`).join("") || '<p class="muted">No hay movimientos para este período.</p>'}</div></section><section class="toolbar"><div><h2>Movimientos</h2><p class="muted">${records.length} movimiento${records.length === 1 ? "" : "s"} en el período.</p></div></section><section class="cash-list">${records.map(cashRecordCard).join("") || '<div class="empty">No hay cobros ni movimientos en el período seleccionado.</div>'}</section>`;
   const updateFilter = () => {
     state.cashFilter.period = $("#cashPeriod").value;
     state.cashFilter.start = $("#cashStart")?.value || "";
@@ -1395,6 +1448,9 @@ function cashDashboard() {
   $("#cashEnd")?.addEventListener("change", updateFilter);
   document.querySelectorAll("[data-cash-add]").forEach((button) => {
     button.onclick = () => cashForm(button.dataset.cashAdd);
+  });
+  document.querySelectorAll("[data-cash-order]").forEach((button) => {
+    button.onclick = () => orderDetail(button.dataset.cashOrder);
   });
 }
 function cashAmount(value) {
@@ -2790,7 +2846,7 @@ function orderCardView(order) {
                 class="ghost"
                 data-deliver="${esc(order.IDOrden)}"
               >
-                ✓ Entregar hoy
+                💰 Registrar pago y entregar
               </button>
             `
             : ""
@@ -4259,6 +4315,15 @@ function form(table, id = "", preset = {}) {
     openQuickIntake({ motoId: preset.IDMoto || "" });
     return;
   }
+  const paymentOrderId =
+    table === "Pagos" && !id ? state.paymentOrderContextId : "";
+  const paymentOrder = paymentOrderId
+    ? (state.db.Ordenes_Trabajo || []).find(
+        (order) => order.IDOrden === paymentOrderId,
+      )
+    : null;
+  const paymentContext = paymentOrder ? orderContext(paymentOrderId) : null;
+  if (!paymentContext) state.paymentOrderContextId = "";
   state.activeOrderId = "";
   state.galleryRequest += 1;
   const def = defs[table];
@@ -4290,10 +4355,10 @@ function form(table, id = "", preset = {}) {
           PrecioUnitario: "Precio unitario",
         }[field] || field;
       const input = opts.length
-        ? `<select name="${field}" ${required}><option value="">Seleccionar…</option>${opts.map(([v, text]) => `<option value="${esc(v)}" ${String(value) === String(v) ? "selected" : ""}>${esc(text)}</option>`).join("")}</select>`
+        ? `<select name="${field}" ${required} ${paymentContext && field === "IDOrden" ? "disabled" : ""}><option value="">Seleccionar…</option>${opts.map(([v, text]) => `<option value="${esc(v)}" ${String(value) === String(v) ? "selected" : ""}>${esc(text)}</option>`).join("")}</select>${paymentContext && field === "IDOrden" ? `<input type="hidden" name="IDOrden" value="${esc(value)}">` : ""}`
         : ["Observaciones", "Problema", "Diagnostico"].includes(field)
           ? `<textarea name="${field}" ${required}>${esc(value)}</textarea>`
-          : `<input name="${field}" value="${esc(field.startsWith("Fecha") ? String(value).slice(0, 10) : value)}" ${required} ${["Importe", "Cantidad", "PrecioUnitario", "PrecioSugerido", "Costo", "PrecioVenta", "Descuento", "Kilometraje", "Cilindrada", "Anio"].includes(field) ? 'type="number" step="any" min="0"' : field.startsWith("Fecha") ? 'type="date"' : 'type="text"'}>`;
+          : `<input name="${field}" value="${esc(field.startsWith("Fecha") ? String(value).slice(0, 10) : value)}" ${required} ${["Importe", "Cantidad", "PrecioUnitario", "PrecioSugerido", "Costo", "PrecioVenta", "Descuento", "Kilometraje", "Cilindrada", "Anio"].includes(field) ? `type="number" step="any" min="${table === "Pagos" && field === "Importe" ? "0.01" : "0"}"` : field.startsWith("Fecha") ? 'type="date"' : 'type="text"'}>`;
       return `<label>${esc(label)}${input}</label>`;
     })
     .join("");
@@ -4304,9 +4369,17 @@ function form(table, id = "", preset = {}) {
     : bikeNew
       ? '<button type="submit" data-next="work">GUARDAR Y CREAR TRABAJO →</button>'
       : "";
+  const paymentSummary = paymentContext
+    ? `<section class="payment-order-summary panel"><p class="eyebrow">Resumen del trabajo</p><div class="payment-order-heading"><div><h2>${esc(paymentContext.client?.Nombre || "Cliente sin identificar")}</h2><p>${esc([paymentContext.bike?.Marca, paymentContext.bike?.Modelo, paymentContext.bike?.Patente].filter(Boolean).join(" · ") || "Moto sin identificar")}</p></div><span class="badge">Orden ${esc(paymentOrderId)}</span></div><div class="payment-summary-values"><div><span>Total del trabajo</span><b>${money(paymentContext.totals.total)}</b></div><div><span>Cobrado anteriormente</span><b>${money(paymentContext.totals.paid)}</b></div><div class="payment-due"><span>Saldo pendiente</span><b>${money(paymentContext.totals.due)}</b></div></div></section>`
+    : "";
   $("#content").innerHTML =
-    `<div class="toolbar"><div><h2>${id ? "Editar" : "Nuevo"} · ${def.title}</h2><p class="muted">${clientNew ? "Registrá el cliente y seguí directamente con su moto." : bikeNew ? "La moto queda asociada al cliente y podés abrir el trabajo inmediatamente." : ""}</p></div><button class="ghost" id="back">← Volver</button></div><form id="editForm" class="panel"><div class="fields">${fields}</div><div class="form-save-actions"><button type="submit" data-next="default">Guardar${id ? " cambios" : ""}</button>${extraButton}</div></form>`;
+    `<div class="toolbar"><div><h2>${paymentContext ? "Registrar nuevo cobro" : `${id ? "Editar" : "Nuevo"} · ${def.title}`}</h2><p class="muted">${paymentContext ? "El cobro quedará vinculado a esta orden." : clientNew ? "Registrá el cliente y seguí directamente con su moto." : bikeNew ? "La moto queda asociada al cliente y podés abrir el trabajo inmediatamente." : ""}</p></div><button class="ghost" id="back">← Volver</button></div>${paymentSummary}<form id="editForm" class="panel"><div class="fields">${fields}</div><div class="form-save-actions"><button type="submit" data-next="default">${paymentContext ? "Guardar cobro" : `Guardar${id ? " cambios" : ""}`}</button>${extraButton}</div></form>`;
   $("#back").onclick = () => {
+    if (paymentContext) {
+      state.paymentOrderContextId = "";
+      orderDetail(paymentOrderId);
+      return;
+    }
     state.view = table;
     render();
   };
@@ -4317,6 +4390,12 @@ function form(table, id = "", preset = {}) {
     const next = event.submitter?.dataset.next || "default";
     const record = Object.fromEntries(new FormData(formEl));
     if (id) record[pk] = id;
+    if (table === "Pagos") {
+      const amount = Number(record.Importe);
+      if (!Number.isFinite(amount) || amount <= 0)
+        return toast("El importe debe ser mayor que cero.");
+      record.Importe = amount;
+    }
     if (table === "Clientes") {
       if (!id) record.Telefono = record.WhatsApp?.trim() || "";
       else if (record.WhatsApp?.trim() && !existing.Telefono)
@@ -4350,7 +4429,7 @@ function form(table, id = "", preset = {}) {
       if (!saved?.[pk])
         throw Error("El servidor no confirmó el registro guardado.");
       updateDbRecord(table, saved, pk);
-      toast("Guardado correctamente.");
+      toast(paymentContext ? "Cobro registrado correctamente." : "Guardado correctamente.");
       if (clientNew && next === "moto") {
         await synchronizeAfterSave();
         state.view = "Motos";
@@ -4359,6 +4438,11 @@ function form(table, id = "", preset = {}) {
         await synchronizeAfterSave();
         openQuickIntake({ clientId: saved.IDCliente, motoId: saved.IDMoto });
       } else {
+        if (paymentContext) {
+          state.paymentOrderContextId = "";
+          orderDetail(paymentOrderId);
+          return;
+        }
         state.view = table === "Ordenes_Trabajo" ? "Ordenes_Trabajo" : table;
         await synchronizeAfterSave();
         if (table === "Clientes") customerDetail(saved.IDCliente);
@@ -4611,8 +4695,184 @@ function orderDetail(id) {
     </div>
   `;
 
-  $("#content").innerHTML =
-    `<button class="ghost" id="back">← Volver</button><h2>${esc(cliente(recordBike(o.IDMoto)?.IDCliente))} · ${esc(moto(o.IDMoto))}</h2><div class="panel"><b>${esc(o.Estado)}</b><p>Problema: ${esc(o.Problema)}</p><p>Diagnóstico: ${esc(o.Diagnostico)}</p><p>Kilometraje: ${esc(o.Kilometraje)}</p><button data-edit="Ordenes_Trabajo:${id}">Editar orden</button>${!["Entregada", "Cancelada"].includes(o.Estado) ? `<button data-deliver="${esc(id)}">✓ Marcar entregada hoy</button>` : ""}</div><h2>Servicios y repuestos</h2><p class="muted">Agregá los conceptos acá mismo, sin salir de la orden.</p><div class="list order-concepts">${d.map((x) => `<div class="item">${esc(x.Tipo)} · ${esc(x.Descripcion)} · ${esc(x.Cantidad)} × ${money(Number(x.PrecioUnitario))} = ${money(Number(x.Subtotal))}</div>`).join("")}</div><form id="inlineConceptForm" class="panel inline-concept-form"><h3>+ Agregar servicio o repuesto</h3><div class="quick-concept-editor"><label>Tipo<select name="Tipo"><option>Servicio</option><option>Repuesto</option></select></label><label>Descripción<input name="Descripcion" required placeholder="Ej.: cambio de aceite"></label><label>Cantidad<input name="Cantidad" type="number" min="0.01" step="any" value="1" required></label><label>Precio unitario ($)<input name="PrecioUnitario" type="number" min="0" step="any" required></label><button id="inlineConceptSubmit" type="submit">Guardar concepto</button></div></form><h2>Pagos</h2><div class="panel"><p>Total: ${money(t.total)} · Cobrado: ${money(t.paid)}</p><h2 class="${t.due > 0 ? "danger" : "success"}">Saldo: ${money(t.due)}</h2>${p.map((x) => `<p>${esc(x.Medio)} · ${money(Number(x.Importe))}</p>`).join("")}<button data-pay="${id}">+ Registrar cobro</button></div><h2>Fotografías</h2><div class="panel">${gallery}<form id="photoForm"><div class="fields"><label>Tipo<select name="Tipo"><option>Ingreso</option><option>Diagnóstico</option><option>Reparación</option><option>Entrega</option><option>General</option></select></label><label>Foto<input type="file" name="foto" accept="image/*" capture="environment" required></label></div><button>Subir foto</button></form><small>Las fotos se almacenan de forma privada en Google Drive.</small></div><button id="print" class="ghost">Imprimir comprobante / Guardar PDF</button>`;
+  $("#content").innerHTML = `
+    <button class="ghost" id="back">← Volver</button>
+
+    <h2>${esc(cliente(recordBike(o.IDMoto)?.IDCliente))} · ${esc(moto(o.IDMoto))}</h2>
+
+    <div class="panel">
+      <b>${esc(o.Estado)}</b>
+      <p>Problema: ${esc(o.Problema)}</p>
+      <p>Diagnóstico: ${esc(o.Diagnostico)}</p>
+      <p>Kilometraje: ${esc(o.Kilometraje)}</p>
+
+      <button data-edit="Ordenes_Trabajo:${id}">Editar orden</button>
+
+      ${
+        !["Entregada", "Cancelada"].includes(o.Estado)
+          ? `<button data-deliver="${esc(id)}">💰 Registrar pago y entregar</button>`
+          : ""
+      }
+    </div>
+
+    <h2>Servicios y repuestos</h2>
+
+    <p class="muted">
+      Agregá los conceptos acá mismo, sin salir de la orden.
+    </p>
+
+    <div class="list order-concepts">
+      ${d
+        .map(
+          (x) => `
+        <div class="item">
+          ${esc(x.Tipo)} · ${esc(x.Descripcion)} ·
+          ${esc(x.Cantidad)} × ${money(Number(x.PrecioUnitario))}
+          = ${money(Number(x.Subtotal))}
+        </div>
+      `,
+        )
+        .join("")}
+    </div>
+
+    <form id="inlineConceptForm" class="panel inline-concept-form">
+      <h3>+ Agregar servicio o repuesto</h3>
+
+      <div class="quick-concept-editor">
+        <label>
+          Tipo
+          <select name="Tipo">
+            <option>Servicio</option>
+            <option>Repuesto</option>
+          </select>
+        </label>
+
+        <label>
+          Descripción
+          <input name="Descripcion" required placeholder="Ej.: cambio de aceite">
+        </label>
+
+        <label>
+          Cantidad
+          <input name="Cantidad" type="number" min="0.01" step="any" value="1" required>
+        </label>
+
+        <label>
+          Precio unitario ($)
+          <input name="PrecioUnitario" type="number" min="0" step="any" required>
+        </label>
+
+        <button id="inlineConceptSubmit" type="submit">
+          Guardar concepto
+        </button>
+      </div>
+    </form>
+
+    <h2>Pagos</h2>
+
+    <div class="panel">
+      <p>
+        Total: ${money(t.total)} · Cobrado: ${money(t.paid)}
+      </p>
+
+      <h2 class="${t.due > 0 ? "danger" : "success"}">
+        Saldo: ${money(t.due)}
+      </h2>
+
+      ${p
+        .map(
+          (x) => `
+        <p>${esc(x.Medio)} · ${money(Number(x.Importe))}</p>
+      `,
+        )
+        .join("")}
+
+      <button data-pay="${id}">+ Registrar cobro</button>
+
+      ${
+        !["Entregada", "Cancelada"].includes(o.Estado)
+          ? `
+            <div
+              class="delivery-section"
+              style="margin-top:20px;padding-top:15px;border-top:1px solid #777"
+            >
+              <h3>Entrega de la moto</h3>
+
+              <label for="deliveryDate">
+                Fecha de entrega
+              </label>
+
+              <input
+                type="date"
+                id="deliveryDate"
+                value="${localToday()}"
+                style="display:block;margin-top:8px;margin-bottom:12px"
+              >
+
+              <p class="muted">
+                Podés registrar la entrega aunque quede un saldo pendiente.
+              </p>
+
+              <button
+                type="button"
+                id="confirmDelivery"
+                data-confirm-delivery="${esc(id)}"
+              >
+                ✓ Confirmar entrega
+              </button>
+
+
+
+              
+            </div>
+          `
+          : ""
+      }
+    </div>
+
+    <h2>Fotografías</h2>
+
+    <div class="panel">
+      ${gallery}
+
+      <form id="photoForm">
+        <div class="fields">
+          <label>
+            Tipo
+            <select name="Tipo">
+              <option>Ingreso</option>
+              <option>Diagnóstico</option>
+              <option>Reparación</option>
+              <option>Entrega</option>
+              <option>General</option>
+            </select>
+          </label>
+
+          <label>
+            Foto
+            <input
+              type="file"
+              name="foto"
+              accept="image/*"
+              capture="environment"
+              required
+            >
+          </label>
+        </div>
+
+        <button>Subir foto</button>
+      </form>
+
+      <small>
+        Las fotos se almacenan de forma privada en Google Drive.
+      </small>
+    </div>
+
+    <button id="print" class="ghost">
+      Imprimir comprobante / Guardar PDF
+    </button>
+  `;
+
   const photoForm = $("#photoForm");
   const photoCamera = photoForm.querySelector('input[name="foto"]');
   const photoFields = photoForm.querySelector(".fields");
@@ -4896,27 +5156,50 @@ function resumeIntake() {
   }
   startIntake(loadIntakeDraft());
 }
-async function deliverOrder(id) {
+async function deliverOrder(id, fechaEntrega) {
   const order = (state.db.Ordenes_Trabajo || []).find(
     (row) => row.IDOrden === id,
   );
-  if (!order || ["Entregada", "Cancelada"].includes(order.Estado)) return;
+
+  if (!order || ["Entregada", "Cancelada"].includes(order.Estado)) {
+    return;
+  }
+
+  if (!fechaEntrega || !/^\d{4}-\d{2}-\d{2}$/.test(fechaEntrega)) {
+    toast("Seleccioná una fecha de entrega válida.");
+    return;
+  }
+
   const ok = await confirmModal({
-    title: "¿Marcar trabajo como entregado?",
-    message: `Se guardará la fecha de entrega de hoy (${argentinaDate(localToday())}) y el estado «Entregada».`,
+    title: "¿Confirmar entrega de la moto?",
+    message: `Se registrará la entrega el ${argentinaDate(fechaEntrega)}. Si existe un saldo pendiente, continuará registrado.`,
     cancelText: "Cancelar",
     confirmText: "Confirmar entrega",
   });
+
   if (!ok) return;
+
   await withSession(async () => {
     const wasDetail = state.activeOrderId === id;
+
     const saved = await api("save", {
       table: "Ordenes_Trabajo",
-      record: { IDOrden: id, Estado: "Entregada", FechaEntrega: localToday() },
+      record: {
+        IDOrden: id,
+        Estado: "Entregada",
+        FechaEntrega: fechaEntrega,
+      },
     });
+
     updateDbRecord("Ordenes_Trabajo", saved, "IDOrden");
-    if (wasDetail) orderDetail(id);
-    toast("Entrega registrada con fecha de hoy.");
+
+    if (wasDetail) {
+      orderDetail(id);
+    } else {
+      render();
+    }
+
+    toast("Entrega registrada correctamente.");
   });
 }
 
@@ -4939,9 +5222,37 @@ function wire() {
     button.onclick = () =>
       openQuickIntake({ motoId: button.dataset.quickMoto });
   });
-  document.querySelectorAll("[data-deliver]").forEach((button) => {
-    button.onclick = () => deliverOrder(button.dataset.deliver);
+
+  document.querySelectorAll("[data-confirm-delivery]").forEach((button) => {
+    button.onclick = () => {
+      const id = button.dataset.confirmDelivery;
+      const fecha = document.querySelector("#deliveryDate")?.value;
+
+      deliverOrder(id, fecha);
+    };
   });
+
+  document.querySelectorAll("[data-deliver]").forEach((button) => {
+    button.onclick = () => {
+      const id = button.dataset.deliver;
+
+      const order = (state.db.Ordenes_Trabajo || []).find(
+        (row) => row.IDOrden === id,
+      );
+
+      if (!order || ["Entregada", "Cancelada"].includes(order.Estado)) {
+        return;
+      }
+
+      orderDetail(id);
+
+      const pagos = document.querySelector("[data-pay]");
+      if (pagos) {
+        pagos.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    };
+  });
+
   document.querySelectorAll("[data-indicator]").forEach((button) => {
     button.onclick = () => {
       const value = button.dataset.indicator;
@@ -5031,11 +5342,15 @@ function wire() {
   );
   document.querySelectorAll("[data-pay]").forEach(
     (b) =>
-      (b.onclick = () =>
+      (b.onclick = () => {
+        const orderId = b.dataset.pay;
+        state.paymentOrderContextId = orderId;
         form("Pagos", "", {
-          IDOrden: b.dataset.pay,
+          IDOrden: orderId,
           Fecha: localToday(),
           Medio: "Efectivo",
-        })),
+          Importe: Math.max(0, totals(orderId).due),
+        });
+      }),
   );
 }
