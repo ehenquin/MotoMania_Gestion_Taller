@@ -26,11 +26,36 @@ const state = {
   cashFilter: { period: "month", start: "", end: "" },
   orderFilter: "",
   quick: null,
+  photoQueues: new Map(),
+  navStack: [],
+  currentScreen: { kind: "view", view: "dashboard" },
 
   // SERVICIOS - Tabla compacta
   serviceSort: "alpha",
   serviceQuery: "",
 };
+const PHOTO_UPLOAD_CONCURRENCY = 2;
+
+function sameScreen(a, b) {
+  return a?.kind === b?.kind && a?.id === b?.id && a?.view === b?.view && a?.table === b?.table;
+}
+function rememberScreen(next) {
+  if (!sameScreen(state.currentScreen, next)) {
+    if (!sameScreen(state.navStack[state.navStack.length - 1], state.currentScreen))
+      state.navStack.push({ ...state.currentScreen });
+    state.currentScreen = { ...next };
+  }
+}
+function goBack(fallback = { kind: "view", view: "Ordenes_Trabajo" }) {
+  const target = state.navStack.pop() || fallback;
+  state.currentScreen = target;
+  if (target.kind === "order") return orderDetail(target.id, false);
+  if (target.kind === "customer") return customerDetail(target.id, false);
+  if (target.kind === "moto") return motoDetail(target.id, false);
+  if (target.kind === "form") return form(target.table, target.id, target.preset || {}, false);
+  state.view = target.view || fallback.view;
+  render();
+}
 const PHOTO_GALLERY_CONCURRENCY = 3;
 const PHOTO_SOURCE_CACHE_LIMIT = 24;
 const defs = {
@@ -576,15 +601,21 @@ $("#nav").onclick = async (e) => {
       state.quick = null;
     }
     state.view = b.dataset.view;
+    state.navStack = [];
     state.orderFilter = "";
     document.querySelector(".nav-more")?.removeAttribute("open");
     render();
   }
 };
 window.addEventListener("beforeunload", (event) => {
+  const photosPending = [...state.photoQueues.values()].some((queue) => queue.some((item) => item.status === "pending" || item.status === "uploading" || item.status === "failed"));
   if (state.view === "intake" && state.intake) {
     captureIntake();
     persistIntake();
+    event.preventDefault();
+    event.returnValue = "";
+  }
+  if (photosPending) {
     event.preventDefault();
     event.returnValue = "";
   }
@@ -1071,6 +1102,7 @@ function printOrder(id) {
 }
 
 function render() {
+  state.currentScreen = { kind: "view", view: state.view };
   state.galleryAbortController?.abort();
   state.galleryAbortController = null;
   state.activeOrderId = "";
@@ -2892,7 +2924,7 @@ const whatsappIcon =
    Incluye WhatsApp con presupuesto o mensaje libre
    ========================================================= */
 
-function customerDetail(id) {
+function customerDetail(id, remember = true) {
   const customer = (state.db.Clientes || []).find(
     (row) => String(row.IDCliente) === String(id),
   );
@@ -2901,6 +2933,7 @@ function customerDetail(id) {
     toast("No se encontró el cliente.");
     return;
   }
+  if (remember) rememberScreen({ kind: "customer", id });
 
   state.galleryAbortController?.abort();
   state.activeOrderId = "";
@@ -3088,10 +3121,7 @@ function customerDetail(id) {
   `;
 
   // VOLVER A CLIENTES
-  $("#back").onclick = () => {
-    state.view = "Clientes";
-    render();
-  };
+  $("#back").onclick = () => goBack({ kind: "view", view: "Clientes" });
 
   // CONECTAR BOTONES EXISTENTES
   wire();
@@ -4310,11 +4340,12 @@ function selectOpts(field, selectedValue = "") {
   return arr;
 }
 
-function form(table, id = "", preset = {}) {
+function form(table, id = "", preset = {}, remember = true) {
   if (table === "Ordenes_Trabajo" && !id) {
     openQuickIntake({ motoId: preset.IDMoto || "" });
     return;
   }
+  if (remember) rememberScreen({ kind: "form", table, id, preset });
   const paymentOrderId =
     table === "Pagos" && !id ? state.paymentOrderContextId : "";
   const paymentOrder = paymentOrderId
@@ -4374,15 +4405,7 @@ function form(table, id = "", preset = {}) {
     : "";
   $("#content").innerHTML =
     `<div class="toolbar"><div><h2>${paymentContext ? "Registrar nuevo cobro" : `${id ? "Editar" : "Nuevo"} · ${def.title}`}</h2><p class="muted">${paymentContext ? "El cobro quedará vinculado a esta orden." : clientNew ? "Registrá el cliente y seguí directamente con su moto." : bikeNew ? "La moto queda asociada al cliente y podés abrir el trabajo inmediatamente." : ""}</p></div><button class="ghost" id="back">← Volver</button></div>${paymentSummary}<form id="editForm" class="panel"><div class="fields">${fields}</div><div class="form-save-actions"><button type="submit" data-next="default">${paymentContext ? "Guardar cobro" : `Guardar${id ? " cambios" : ""}`}</button>${extraButton}</div></form>`;
-  $("#back").onclick = () => {
-    if (paymentContext) {
-      state.paymentOrderContextId = "";
-      orderDetail(paymentOrderId);
-      return;
-    }
-    state.view = table;
-    render();
-  };
+  $("#back").onclick = () => goBack({ kind: "view", view: table });
   $("#editForm").onsubmit = async (event) => {
     event.preventDefault();
     const formEl = event.currentTarget;
@@ -4440,7 +4463,8 @@ function form(table, id = "", preset = {}) {
       } else {
         if (paymentContext) {
           state.paymentOrderContextId = "";
-          orderDetail(paymentOrderId);
+          state.currentScreen = { kind: "order", id: paymentOrderId };
+          orderDetail(paymentOrderId, false);
           return;
         }
         state.view = table === "Ordenes_Trabajo" ? "Ordenes_Trabajo" : table;
@@ -4448,7 +4472,10 @@ function form(table, id = "", preset = {}) {
         if (table === "Clientes") customerDetail(saved.IDCliente);
         else if (table === "Motos") motoDetail(saved.IDMoto);
         else if (table === "Ordenes_Trabajo") orderDetail(saved.IDOrden);
-        else if (table === "Detalle_Trabajo") orderDetail(saved.IDOrden);
+        else if (table === "Detalle_Trabajo") {
+          state.currentScreen = { kind: "order", id: saved.IDOrden };
+          orderDetail(saved.IDOrden, false);
+        }
       }
     } catch (error) {
       if (error instanceof SessionExpiredError) showLogin(error.message);
@@ -4656,9 +4683,65 @@ function loadPhotoGallery(photos, request, orderId, signal) {
   );
 }
 
-function orderDetail(id) {
+function photoQueueFor(orderId) {
+  if (!state.photoQueues.has(orderId)) state.photoQueues.set(orderId, []);
+  return state.photoQueues.get(orderId);
+}
+function addQueuedPhotos(orderId, files, type) {
+  const queue = photoQueueFor(orderId);
+  [...files].forEach((file) => {
+    if (!isSupportedPhotoFile(file)) return toast("Solo se admiten fotografías JPG, PNG o WEBP.");
+    const duplicate = queue.some((item) => item.file.name === file.name && item.file.size === file.size && item.file.lastModified === file.lastModified);
+    if (!duplicate) queue.push({ id: uploadKey("queued"), file, type, url: URL.createObjectURL(file), status: "pending", error: "" });
+  });
+  renderPhotoQueue(orderId);
+}
+function renderPhotoQueue(orderId) {
+  const root = $("#photoQueue"), queue = photoQueueFor(orderId);
+  const upload = $("#uploadAllPhotos"), retry = $("#retryFailedPhotos");
+  if (!root || state.activeOrderId !== orderId) return;
+  root.replaceChildren(...queue.map((item) => {
+    const card = document.createElement("article"); card.className = `queued-photo is-${item.status}`;
+    const image = document.createElement("img"); image.src = item.url; image.alt = item.file.name;
+    const text = document.createElement("span"); text.textContent = item.status === "failed" ? `Falló: ${item.error}` : item.status === "uploading" ? "Subiendo…" : item.status === "saved" ? "Guardada" : "Pendiente";
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "ghost"; remove.textContent = "Quitar"; remove.disabled = item.status === "uploading" || item.status === "saved";
+    remove.onclick = () => { const index = queue.indexOf(item); if (index >= 0) { URL.revokeObjectURL(item.url); queue.splice(index, 1); renderPhotoQueue(orderId); } };
+    image.onclick = () => openPhotoModal(item.url, item.file.name); card.append(image, text, remove); return card;
+  }));
+  const ready = queue.filter((item) => item.status === "pending" || item.status === "failed").length;
+  const failed = queue.filter((item) => item.status === "failed").length;
+  upload.textContent = `☁️ Subir todas (${ready})`; upload.disabled = !ready;
+  retry.hidden = !failed;
+}
+async function uploadQueuedPhotos(orderId, failedOnly = false) {
+  const queue = photoQueueFor(orderId);
+  const selected = queue.filter((item) => (failedOnly ? item.status === "failed" : item.status === "pending" || item.status === "failed"));
+  if (!selected.length) return;
+  let next = 0;
+  const worker = async () => {
+    while (next < selected.length) {
+      const item = selected[next++]; item.status = "uploading"; item.error = ""; renderPhotoQueue(orderId);
+      try {
+        const saved = confirmUploadedPhoto(await api("uploadPhoto", { IDOrden: orderId, Tipo: item.type, base64: await shrink(item.file), uploadKey: item.id }), orderId);
+        updateDbRecord("Fotos", saved, "IDFoto"); item.status = "saved";
+      } catch (error) { item.status = "failed"; item.error = error.message || "No se pudo subir"; if (error instanceof SessionExpiredError) showLogin(error.message); }
+      renderPhotoQueue(orderId);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PHOTO_UPLOAD_CONCURRENCY, selected.length) }, worker));
+  if (state.activeOrderId === orderId) { toast("Subida de fotografías finalizada."); orderDetail(orderId, false); }
+}
+
+function orderDetail(id, remember = true) {
   const o = state.db.Ordenes_Trabajo.find((x) => x.IDOrden === id);
   if (!o) return;
+  const retainedQueue = state.photoQueues.get(id);
+  if (retainedQueue) state.photoQueues.set(id, retainedQueue.filter((item) => {
+    if (item.status !== "saved") return true;
+    URL.revokeObjectURL(item.url);
+    return false;
+  }));
+  if (remember) rememberScreen({ kind: "order", id });
   const d = state.db.Detalle_Trabajo.filter((x) => x.IDOrden === id),
     p = state.db.Pagos.filter((x) => x.IDOrden === id),
     photos = state.db.Fotos.filter((x) => x.IDOrden === id),
@@ -4725,10 +4808,9 @@ function orderDetail(id) {
       ${d
         .map(
           (x) => `
-        <div class="item">
-          ${esc(x.Tipo)} · ${esc(x.Descripcion)} ·
-          ${esc(x.Cantidad)} × ${money(Number(x.PrecioUnitario))}
-          = ${money(Number(x.Subtotal))}
+        <div class="item concept-row">
+          <div><strong>${esc(x.Tipo)} · ${esc(x.Descripcion)}</strong><small>${esc(x.Cantidad)} × ${money(Number(x.PrecioUnitario))} = ${money(Number(x.Subtotal))}</small></div>
+          <div class="concept-actions"><button class="ghost" type="button" data-edit-concept="${esc(x.IDDetalle)}">✏️ Editar</button><button class="danger-button" type="button" data-delete-concept="${esc(x.IDDetalle)}">🗑️ Borrar</button></div>
         </div>
       `,
         )
@@ -4855,12 +4937,12 @@ function orderDetail(id) {
               name="foto"
               accept="image/*"
               capture="environment"
-              required
             >
           </label>
         </div>
 
-        <button>Subir foto</button>
+        <div id="photoQueue" class="photo-queue" aria-live="polite"></div>
+        <div class="photo-queue-actions"><button id="uploadAllPhotos" type="button">☁️ Subir todas (0)</button><button id="retryFailedPhotos" class="ghost" type="button" hidden>Reintentar fallidas</button></div>
       </form>
 
       <small>
@@ -4926,7 +5008,7 @@ function orderDetail(id) {
   photoFile.addEventListener("change", () =>
     previewSelectedPhoto(photoFile.files[0], photoCamera),
   );
-  $("#back").onclick = render;
+  $("#back").onclick = () => goBack({ kind: "view", view: "Ordenes_Trabajo" });
   $("#print").onclick = () => printOrder(id);
   $("#inlineConceptForm").onsubmit = async (event) => {
     event.preventDefault();
@@ -5022,6 +5104,38 @@ function orderDetail(id) {
       }
     }
   };
+  // La cola permanece en memoria por orden aunque el usuario cambie de pantalla.
+  photoFile.multiple = true;
+  photoCamera.addEventListener("change", () => {
+    addQueuedPhotos(id, photoCamera.files, photoForm.Tipo.value);
+    photoCamera.value = "";
+  });
+  photoFile.addEventListener("change", () => {
+    addQueuedPhotos(id, photoFile.files, photoForm.Tipo.value);
+    photoFile.value = "";
+  });
+  photoForm.onsubmit = (event) => event.preventDefault();
+  $("#uploadAllPhotos").onclick = () => void uploadQueuedPhotos(id);
+  $("#retryFailedPhotos").onclick = () => void uploadQueuedPhotos(id, true);
+  renderPhotoQueue(id);
+  document.querySelectorAll("[data-edit-concept]").forEach((button) => {
+    button.onclick = () => form("Detalle_Trabajo", button.dataset.editConcept);
+  });
+  document.querySelectorAll("[data-delete-concept]").forEach((button) => {
+    button.onclick = async () => {
+      const item = d.find((row) => row.IDDetalle === button.dataset.deleteConcept);
+      if (!item) return;
+      const accepted = await confirmModal({ title: "¿Eliminar este concepto?", message: `${item.Descripcion} · ${money(Number(item.Subtotal))}`, cancelText: "Cancelar", confirmText: "Eliminar concepto", danger: true });
+      if (!accepted) return;
+      button.disabled = true;
+      try {
+        const result = await api("deleteDetail", { table: "Detalle_Trabajo", IDDetalle: item.IDDetalle });
+        if (!result?.deleted || result.IDDetalle !== item.IDDetalle) throw Error("El servidor no confirmó la eliminación.");
+        state.db.Detalle_Trabajo = state.db.Detalle_Trabajo.filter((row) => row.IDDetalle !== item.IDDetalle);
+        orderDetail(id, false); toast("Concepto eliminado correctamente.");
+      } catch (error) { button.disabled = false; toast(`No se pudo eliminar el concepto: ${error.message}`); }
+    };
+  });
   void loadPhotoGallery(
     photos,
     galleryRequest,
@@ -5060,9 +5174,10 @@ function addOrderEnhancements(id) {
   printable.innerHTML = `<header><h1>MOTOMANÍA</h1><p>Comprobante de orden de trabajo</p></header><div class="print-grid"><p><b>Fecha:</b> ${esc(argentinaDate(new Date().toISOString()))}</p><p><b>Orden:</b> ${esc(order.IDOrden)}</p><p><b>Estado:</b> ${esc(orderStageLabel(order.Estado))}</p><p><b>Cliente:</b> ${esc(client?.Nombre || "Sin cliente")}</p><p><b>Moto:</b> ${esc([bike?.Marca, bike?.Modelo].filter(Boolean).join(" ") || "Sin moto")}</p><p><b>Patente:</b> ${esc(bike?.Patente || "Sin patente")}</p><p><b>Kilometraje:</b> ${esc(order.Kilometraje || "No informado")}</p></div><p><b>Problema informado:</b> ${esc(order.Problema || "No informado")}</p>${order.Observaciones ? `<p><b>Observaciones:</b> ${esc(order.Observaciones)}</p>` : ""}<h2>Servicios realizados</h2>${lineList(services)}<h2>Repuestos utilizados</h2>${lineList(parts)}<h2>Pagos registrados</h2>${payments.length ? `<ul>${payments.map((payment) => `<li>${esc(argentinaDate(payment.Fecha))} · ${esc(payment.Medio || "Sin medio")} · ${money(Number(payment.Importe) || 0)}</li>`).join("")}</ul>` : "<p>Sin pagos registrados.</p>"}<div class="print-totals"><p>Presupuesto total: <b>${money(summary.total)}</b></p><p>Total cobrado: <b>${money(summary.paid)}</b></p><p>Saldo pendiente: <b>${money(summary.due)}</b></p></div></article>`;
   $("#content").append(printable);
 }
-function motoDetail(id) {
+function motoDetail(id, remember = true) {
   const bike = (state.db.Motos || []).find((row) => row.IDMoto === id);
   if (!bike) return;
+  if (remember) rememberScreen({ kind: "moto", id });
   state.activeOrderId = "";
   state.galleryRequest += 1;
   const owner = (state.db.Clientes || []).find(
@@ -5096,10 +5211,7 @@ function motoDetail(id) {
     '<div class="empty">Esta moto todavía no tiene órdenes registradas.</div>';
   $("#content").innerHTML =
     `<div class="toolbar"><div><h2>${esc(title || "Moto")}</h2><p class="muted">Cliente: ${esc(owner?.Nombre || "Sin cliente")}</p></div><div>${owner ? `<button class="ghost" data-open-client="${esc(owner.IDCliente)}">Ver ficha del cliente</button>` : ""}<button class="ghost" id="back">Volver a motos</button><button data-edit="Motos:${esc(id)}">Editar moto</button>${motoIsActive(bike) ? `<button data-quick-moto="${esc(id)}">+ NUEVO TRABAJO</button>` : ""}<button class="ghost" data-moto-active="${esc(id)}" data-active="${motoIsActive(bike) ? "false" : "true"}">${motoIsActive(bike) ? "Dar de baja" : "Reactivar"}</button></div></div>${!motoIsActive(bike) ? '<p class="muted"><b>● Moto dada de baja</b></p>' : ""}<section class="panel"><h2>Historial de servicios</h2><p class="muted">Órdenes vinculadas a esta moto, desde el ingreso más reciente.</p><div class="list">${history}</div></section>`;
-  $("#back").onclick = () => {
-    state.view = "Motos";
-    render();
-  };
+  $("#back").onclick = () => goBack({ kind: "view", view: "Motos" });
   wire();
 }
 function isSupportedPhotoFile(file) {
