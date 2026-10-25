@@ -52,9 +52,21 @@ function goBack(fallback = { kind: "view", view: "Ordenes_Trabajo" }) {
   if (target.kind === "order") return orderDetail(target.id, false);
   if (target.kind === "customer") return customerDetail(target.id, false);
   if (target.kind === "moto") return motoDetail(target.id, false);
-  if (target.kind === "form") return form(target.table, target.id, target.preset || {}, false);
+  if (target.kind === "form") return form(target.table, target.id, target.preset || {}, false, target.orderId || "");
   state.view = target.view || fallback.view;
   render();
+}
+function openOrderEditForm(table, id, orderId) {
+  if (!id || !orderId) return;
+  form(table, id, {}, true, orderId);
+}
+function orderEditFields(table) {
+  const allowed = {
+    Clientes: ["Nombre", "Telefono", "WhatsApp", "DNI", "Domicilio", "Observaciones"],
+    Motos: ["Patente", "Marca", "Modelo", "Cilindrada", "Anio", "Color", "Chasis", "Observaciones"],
+    Ordenes_Trabajo: ["Kilometraje", "Problema", "Diagnostico", "FechaPrometida", "Observaciones"],
+  };
+  return allowed[table] || defs[table]?.fields || [];
 }
 const PHOTO_GALLERY_CONCURRENCY = 3;
 const PHOTO_SOURCE_CACHE_LIMIT = 24;
@@ -4340,12 +4352,13 @@ function selectOpts(field, selectedValue = "") {
   return arr;
 }
 
-function form(table, id = "", preset = {}, remember = true) {
+function form(table, id = "", preset = {}, remember = true, orderId = "") {
   if (table === "Ordenes_Trabajo" && !id) {
     openQuickIntake({ motoId: preset.IDMoto || "" });
     return;
   }
-  if (remember) rememberScreen({ kind: "form", table, id, preset });
+  const isOrderEdit = Boolean(orderId && id && ["Clientes", "Motos", "Ordenes_Trabajo"].includes(table));
+  if (remember) rememberScreen({ kind: "form", table, id, preset, orderId: isOrderEdit ? orderId : "" });
   const paymentOrderId =
     table === "Pagos" && !id ? state.paymentOrderContextId : "";
   const paymentOrder = paymentOrderId
@@ -4369,7 +4382,8 @@ function form(table, id = "", preset = {}, remember = true) {
   }[table];
   const existing = (state.db[table] || []).find((row) => row[pk] === id) || {};
   const row = { ...existing, ...preset };
-  const fields = def.fields
+  const formFields = isOrderEdit ? orderEditFields(table) : def.fields;
+  const fields = formFields
     .map((field) => {
       const value = row[field] ?? "";
       const opts = selectOpts(field, value);
@@ -4378,6 +4392,7 @@ function form(table, id = "", preset = {}, remember = true) {
         {
           IDCliente: "Cliente",
           IDMoto: "Moto (cliente · patente)",
+          Telefono: "Teléfono",
           Anio: "Año",
           Cilindrada: "Cilindrada (cc)",
           FechaPrometida: "Fecha prometida",
@@ -4403,9 +4418,13 @@ function form(table, id = "", preset = {}, remember = true) {
   const paymentSummary = paymentContext
     ? `<section class="payment-order-summary panel"><p class="eyebrow">Resumen del trabajo</p><div class="payment-order-heading"><div><h2>${esc(paymentContext.client?.Nombre || "Cliente sin identificar")}</h2><p>${esc([paymentContext.bike?.Marca, paymentContext.bike?.Modelo, paymentContext.bike?.Patente].filter(Boolean).join(" · ") || "Moto sin identificar")}</p></div><span class="badge">Orden ${esc(paymentOrderId)}</span></div><div class="payment-summary-values"><div><span>Total del trabajo</span><b>${money(paymentContext.totals.total)}</b></div><div><span>Cobrado anteriormente</span><b>${money(paymentContext.totals.paid)}</b></div><div class="payment-due"><span>Saldo pendiente</span><b>${money(paymentContext.totals.due)}</b></div></div></section>`
     : "";
+  const orderEditTitle = { Clientes: "Editar cliente", Motos: "Editar moto", Ordenes_Trabajo: "Editar trabajo" }[table];
   $("#content").innerHTML =
-    `<div class="toolbar"><div><h2>${paymentContext ? "Registrar nuevo cobro" : `${id ? "Editar" : "Nuevo"} · ${def.title}`}</h2><p class="muted">${paymentContext ? "El cobro quedará vinculado a esta orden." : clientNew ? "Registrá el cliente y seguí directamente con su moto." : bikeNew ? "La moto queda asociada al cliente y podés abrir el trabajo inmediatamente." : ""}</p></div><button class="ghost" id="back">← Volver</button></div>${paymentSummary}<form id="editForm" class="panel"><div class="fields">${fields}</div><div class="form-save-actions"><button type="submit" data-next="default">${paymentContext ? "Guardar cobro" : `Guardar${id ? " cambios" : ""}`}</button>${extraButton}</div></form>`;
-  $("#back").onclick = () => goBack({ kind: "view", view: table });
+    `<div class="toolbar"><div><h2>${isOrderEdit ? orderEditTitle : paymentContext ? "Registrar nuevo cobro" : `${id ? "Editar" : "Nuevo"} · ${def.title}`}</h2><p class="muted">${isOrderEdit ? "Los cambios se aplicarán a este registro y volverás a la misma orden." : paymentContext ? "El cobro quedará vinculado a esta orden." : clientNew ? "Registrá el cliente y seguí directamente con su moto." : bikeNew ? "La moto queda asociada al cliente y podés abrir el trabajo inmediatamente." : ""}</p></div><button class="ghost" id="back">← Volver</button></div>${paymentSummary}<form id="editForm" class="panel order-context-form"><div class="fields">${fields}</div><div class="form-save-actions"><button type="submit" data-next="default">${paymentContext ? "Guardar cobro" : `Guardar${id ? " cambios" : ""}`}</button>${extraButton}</div></form>`;
+  $("#back").onclick = () => {
+    if (isOrderEdit) return goBack({ kind: "order", id: orderId });
+    goBack({ kind: "view", view: table });
+  };
   $("#editForm").onsubmit = async (event) => {
     event.preventDefault();
     const formEl = event.currentTarget;
@@ -4461,6 +4480,16 @@ function form(table, id = "", preset = {}, remember = true) {
         await synchronizeAfterSave();
         openQuickIntake({ clientId: saved.IDCliente, motoId: saved.IDMoto });
       } else {
+        if (isOrderEdit) {
+          state.view = "Ordenes_Trabajo";
+          const previousScreen = state.navStack[state.navStack.length - 1];
+          if (previousScreen?.kind === "order" && previousScreen.id === orderId)
+            state.navStack.pop();
+          state.currentScreen = { kind: "order", id: orderId };
+          await synchronizeAfterSave();
+          orderDetail(orderId, false);
+          return;
+        }
         if (paymentContext) {
           state.paymentOrderContextId = "";
           state.currentScreen = { kind: "order", id: paymentOrderId };
@@ -4778,24 +4807,24 @@ function orderDetail(id, remember = true) {
     </div>
   `;
 
+  const context = orderContext(id);
+  const bike = context.bike;
+  const client = context.client;
   $("#content").innerHTML = `
     <button class="ghost" id="back">← Volver</button>
 
-    <h2>${esc(cliente(recordBike(o.IDMoto)?.IDCliente))} · ${esc(moto(o.IDMoto))}</h2>
+    <section class="panel order-identity-panel">
+      <div class="order-identity-heading">
+        <div><p class="eyebrow">Cliente y motocicleta</p><h2>${esc(client?.Nombre || "Cliente no encontrado")}</h2><p>${esc([bike?.Marca, bike?.Modelo].filter(Boolean).join(" ") || "Moto no encontrada")}${bike?.Patente ? ` · ${esc(bike.Patente)}` : ""}</p></div>
+        <div class="order-context-actions">${client ? `<button class="ghost" type="button" data-order-edit="Clientes:${esc(client.IDCliente)}">✏️ Editar cliente</button>` : ""}${bike ? `<button class="ghost" type="button" data-order-edit="Motos:${esc(bike.IDMoto)}">✏️ Editar moto</button>` : ""}</div>
+      </div>
+    </section>
 
-    <div class="panel">
-      <b>${esc(o.Estado)}</b>
+    <div class="panel order-work-panel">
+      <div class="order-work-heading"><div><p class="eyebrow">Información del trabajo</p><b>${esc(o.Estado)}</b></div><div class="order-context-actions"><button type="button" data-order-edit="Ordenes_Trabajo:${esc(id)}">✏️ Editar trabajo</button>${!["Entregada", "Cancelada"].includes(o.Estado) ? `<button data-deliver="${esc(id)}">💰 Registrar pago y entregar</button>` : ""}</div></div>
       <p>Problema: ${esc(o.Problema)}</p>
       <p>Diagnóstico: ${esc(o.Diagnostico)}</p>
       <p>Kilometraje: ${esc(o.Kilometraje)}</p>
-
-      <button data-edit="Ordenes_Trabajo:${id}">Editar orden</button>
-
-      ${
-        !["Entregada", "Cancelada"].includes(o.Estado)
-          ? `<button data-deliver="${esc(id)}">💰 Registrar pago y entregar</button>`
-          : ""
-      }
     </div>
 
     <h2>Servicios y repuestos</h2>
@@ -5414,6 +5443,12 @@ function wire() {
         form(table, id);
       }),
   );
+  document.querySelectorAll("[data-order-edit]").forEach((button) => {
+    button.onclick = () => {
+      const [table, id] = button.dataset.orderEdit.split(":");
+      openOrderEditForm(table, id, state.activeOrderId);
+    };
+  });
   document
     .querySelectorAll("[data-open]")
     .forEach((b) => (b.onclick = () => orderDetail(b.dataset.open)));
