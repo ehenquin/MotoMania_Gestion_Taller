@@ -33,8 +33,28 @@ const state = {
   // SERVICIOS - Tabla compacta
   serviceSort: "alpha",
   serviceQuery: "",
+  serviceFilter: "all",
+  partSort: "alpha",
+  partQuery: "",
+  partFilter: "all",
 };
 const PHOTO_UPLOAD_CONCURRENCY = 2;
+
+function isCatalogActive(value) {
+  if (typeof value === "boolean") return value;
+  return !["false", "0", "no", "inactivo", "baja", "off"].includes(
+    String(value ?? "").trim().toLowerCase(),
+  );
+}
+function catalogPrice(value) {
+  if (value === "" || value == null) return null;
+  let text = String(value).trim().replace(/[$\s]/g, "");
+  if (text.includes(",") && text.includes(".")) text = text.replace(/\./g, "").replace(",", ".");
+  else if (text.includes(",")) text = text.replace(",", ".");
+  else if (/^\d{1,3}(\.\d{3})+$/.test(text)) text = text.replace(/\./g, "");
+  const number = Number(text);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
 
 function sameScreen(a, b) {
   return a?.kind === b?.kind && a?.id === b?.id && a?.view === b?.view && a?.table === b?.table;
@@ -3913,6 +3933,71 @@ function renderMotosTable() {
    ========================================================== */
 
 /* ==========================================================
+   CATÁLOGOS — tablas compactas de servicios y repuestos
+   ========================================================== */
+
+function catalogView(table) {
+  const isService = table === "Servicios";
+  const config = isService
+    ? { title: "Servicios", singular: "servicio", pk: "IDServicio", name: "Nombre", price: "PrecioSugerido", query: "serviceQuery", sort: "serviceSort", filter: "serviceFilter" }
+    : { title: "Repuestos", singular: "repuesto", pk: "IDRepuesto", name: "Descripcion", price: "PrecioVenta", query: "partQuery", sort: "partSort", filter: "partFilter" };
+  const codeColumn = isService ? "" : "<th>Código</th>";
+  const rows = [...(state.db[table] || [])];
+  const query = state[config.query] || "";
+  const filter = state[config.filter] || "all";
+  const sort = state[config.sort] || "alpha";
+
+  const nameCompare = (a, b) => String(a[config.name] || "").localeCompare(String(b[config.name] || ""), "es", { sensitivity: "base", numeric: true });
+  const statusLabel = (active) => active ? "Activo" : "Inactivo";
+
+  $("#content").innerHTML = `
+    <div class="toolbar"><div><h2>${config.title}</h2><p class="muted">${rows.length} ${config.singular}${rows.length === 1 ? "" : "es"} registrados</p></div><button type="button" data-add="${table}">+ Nuevo ${config.singular}</button></div>
+    <div class="catalog-table-tools">
+      <input id="catalogSearch" type="search" placeholder="Buscar ${config.singular}..." autocomplete="off" value="${esc(query)}">
+      <select id="catalogStatusFilter" aria-label="Filtrar ${config.title} por estado"><option value="all" ${filter === "all" ? "selected" : ""}>Todos</option><option value="active" ${filter === "active" ? "selected" : ""}>Activos</option><option value="inactive" ${filter === "inactive" ? "selected" : ""}>Inactivos</option></select>
+      <div class="catalog-sort-actions"><button type="button" id="catalogSortAlpha" class="ghost catalog-sort-button">A–Z Orden alfabético</button><button type="button" id="catalogSortPrice" class="ghost catalog-sort-button">$ Orden por precio</button></div>
+    </div>
+    <div class="catalog-table-wrap"><table class="catalog-table ${isService ? "services-table" : "parts-table"}"><thead><tr>${codeColumn}<th>${isService ? "Servicio" : "Repuesto"}</th>${isService ? "" : "<th>Costo</th>"}<th>Precio ${isService ? "sugerido" : "de venta"}</th><th>Estado</th><th>Acciones</th></tr></thead><tbody id="catalogRows"></tbody></table></div>
+    <p id="catalogCount" class="muted"></p>
+  `;
+
+  const update = () => {
+    const terms = String(state[config.query] || "").trim().split(/\s+/).filter(Boolean).map(normalizeSearch);
+    const selectedFilter = state[config.filter] || "all";
+    const filtered = rows.filter((row) => {
+      const active = isCatalogActive(row.Activo);
+      if (selectedFilter === "active" && !active) return false;
+      if (selectedFilter === "inactive" && active) return false;
+      return terms.every((term) => normalizeSearch([row.Codigo, row[config.name], row[config.price], row.Costo, row[config.pk]].join(" ")).includes(term));
+    });
+    filtered.sort((a, b) => {
+      if (state[config.sort] === "price") {
+        const priceA = catalogPrice(a[config.price]), priceB = catalogPrice(b[config.price]);
+        if (priceA === null && priceB !== null) return 1;
+        if (priceB === null && priceA !== null) return -1;
+        if (priceA !== null && priceB !== null && priceA !== priceB) return priceA - priceB;
+      }
+      return nameCompare(a, b);
+    });
+    $("#catalogRows").innerHTML = filtered.map((row) => {
+      const active = isCatalogActive(row.Activo);
+      const price = catalogPrice(row[config.price]);
+      const cost = catalogPrice(row.Costo);
+      return `<tr class="${active ? "" : "catalog-inactive"}">${isService ? "" : `<td data-label="Código" class="catalog-code">${esc(row.Codigo || "—")}</td>`}<td data-label="${isService ? "Servicio" : "Repuesto"}" class="catalog-name">${esc(row[config.name] || "Sin nombre")}</td>${isService ? "" : `<td data-label="Costo" class="catalog-price">${cost === null ? '<span class="muted">Sin costo</span>' : money(cost)}</td>`}<td data-label="Precio ${isService ? "sugerido" : "de venta"}" class="catalog-price">${price === null ? '<span class="muted">Sin precio</span>' : money(price)}</td><td data-label="Estado"><span class="catalog-status ${active ? "activo" : "inactivo"}">${statusLabel(active)}</span></td><td data-label="Acciones"><button type="button" class="ghost" data-edit="${table}:${esc(row[config.pk])}">Editar</button></td></tr>`;
+    }).join("") || `<tr><td colspan="${isService ? 4 : 6}" class="catalog-empty">No se encontraron ${config.title.toLowerCase()}.</td></tr>`;
+    $("#catalogCount").textContent = `${filtered.length} ${config.singular}${filtered.length === 1 ? "" : "es"} mostrados`;
+    $("#catalogSortAlpha").classList.toggle("is-active", state[config.sort] !== "price");
+    $("#catalogSortPrice").classList.toggle("is-active", state[config.sort] === "price");
+    wire();
+  };
+  $("#catalogSearch").oninput = (event) => { state[config.query] = event.target.value; update(); };
+  $("#catalogStatusFilter").onchange = (event) => { state[config.filter] = event.target.value; update(); };
+  $("#catalogSortAlpha").onclick = () => { state[config.sort] = "alpha"; update(); };
+  $("#catalogSortPrice").onclick = () => { state[config.sort] = "price"; update(); };
+  update();
+}
+
+/* ==========================================================
    MOTOMANÍA — TABLA DE SERVICIOS
    Búsqueda, orden alfabético y orden por precio
    ========================================================== */
@@ -3963,6 +4048,8 @@ function servicesView() {
     `;
     return;
   }
+
+  return catalogView("Servicios");
 
   const servicios = [...(state.db.Servicios || [])];
 
@@ -4230,6 +4317,7 @@ function list(table) {
       `;
       return;
     }
+    return catalogView("Repuestos");
   }
 
   if (table === "Motos") {
@@ -4385,7 +4473,9 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
   const formFields = isOrderEdit ? orderEditFields(table) : def.fields;
   const fields = formFields
     .map((field) => {
-      const value = row[field] ?? "";
+      const value = field === "Activo" && ["Servicios", "Repuestos"].includes(table)
+        ? (row[field] ?? true)
+        : (row[field] ?? "");
       const opts = selectOpts(field, value);
       const required = def.required.includes(field) ? "required" : "";
       const label =
@@ -4400,7 +4490,9 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
           Problema: "Problema informado",
           PrecioUnitario: "Precio unitario",
         }[field] || field;
-      const input = opts.length
+      const input = field === "Activo" && ["Servicios", "Repuestos"].includes(table)
+        ? `<span class="active-toggle-control"><input type="hidden" name="Activo" value="false"><input id="activeToggle" class="active-toggle-input" type="checkbox" name="Activo" value="true" ${isCatalogActive(value) ? "checked" : ""} role="switch" aria-label="Activo"><span class="active-toggle-track" aria-hidden="true"></span><span class="active-toggle-text">${isCatalogActive(value) ? "Sí" : "No"}</span></span>`
+        : opts.length
         ? `<select name="${field}" ${required} ${paymentContext && field === "IDOrden" ? "disabled" : ""}><option value="">Seleccionar…</option>${opts.map(([v, text]) => `<option value="${esc(v)}" ${String(value) === String(v) ? "selected" : ""}>${esc(text)}</option>`).join("")}</select>${paymentContext && field === "IDOrden" ? `<input type="hidden" name="IDOrden" value="${esc(value)}">` : ""}`
         : ["Observaciones", "Problema", "Diagnostico"].includes(field)
           ? `<textarea name="${field}" ${required}>${esc(value)}</textarea>`
@@ -4425,6 +4517,15 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
     if (isOrderEdit) return goBack({ kind: "order", id: orderId });
     goBack({ kind: "view", view: table });
   };
+  const activeToggle = $("#activeToggle");
+  if (activeToggle) {
+    const activeLabel = activeToggle.parentElement.querySelector(".active-toggle-text");
+    activeToggle.addEventListener("change", () => {
+      activeLabel.textContent = activeToggle.checked ? "Sí" : "No";
+      activeToggle.parentElement.classList.toggle("is-active", activeToggle.checked);
+    });
+    activeToggle.parentElement.classList.toggle("is-active", activeToggle.checked);
+  }
   $("#editForm").onsubmit = async (event) => {
     event.preventDefault();
     const formEl = event.currentTarget;
@@ -4432,6 +4533,8 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
     const next = event.submitter?.dataset.next || "default";
     const record = Object.fromEntries(new FormData(formEl));
     if (id) record[pk] = id;
+    if (["Servicios", "Repuestos"].includes(table))
+      record.Activo = isCatalogActive(record.Activo);
     if (table === "Pagos") {
       const amount = Number(record.Importe);
       if (!Number.isFinite(amount) || amount <= 0)
