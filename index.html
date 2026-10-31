@@ -29,16 +29,25 @@
         >
           ↻ <span>Actualizar</span>
         </button>
+        <button id="adminMode" class="ghost header-button" type="button" hidden>
+          Cambiar perfil
+        </button>
         <button id="logout" class="ghost header-button" type="button" hidden>
-          Salir
+          Cerrar sesión
         </button>
       </div>
     </header>
     <main>
       <section id="login" class="panel login">
         <h1>Acceso al taller</h1>
-        <p>Ingresá tu contraseña para continuar.</p>
+        <p>Elegí tu perfil e ingresá la contraseña.</p>
         <form id="loginForm">
+          <label for="profileRole">Perfil
+            <select id="profileRole" required>
+              <option value="EMPLEADO">EMPLEADO</option>
+              <option value="ADMIN">ENCARGADO</option>
+            </select>
+          </label>
           <label class="sr-only" for="password">Contraseña</label>
           <div class="password-field">
             <input
@@ -60,7 +69,7 @@
               <span aria-hidden="true">👁</span>
             </button>
           </div>
-          <button id="loginSubmit" type="submit">Ingresar al panel</button>
+          <button id="loginSubmit" type="submit">Ingresar</button>
         </form>
       </section>
       <section id="app" hidden>
@@ -78,22 +87,28 @@
           <button data-view="Clientes"><span>♙</span> Clientes</button>
           <button data-view="Motos"><span>🏍</span> Motos</button>
           <button data-view="Ordenes_Trabajo"><span>▣</span> Trabajos</button>
-          <button data-view="Caja"><span>▤</span> Caja</button>
+          <button data-view="Caja" data-admin-only><span>▤</span> Caja</button>
 
           <details class="nav-more">
             <summary>⋯ Más</summary>
             <div class="nav-more-menu">
-              <button data-view="Servicios"><span>⚙</span> Servicios</button>
-              <button data-view="Repuestos"><span>▤</span> Repuestos</button>
+              <button data-view="Servicios" data-admin-only><span>⚙</span> Servicios</button>
+              <button data-view="Repuestos" data-admin-only><span>▤</span> Repuestos</button>
             </div>
           </details>
         </nav>
         <section id="content"></section>
       </section>
       <div id="notice" role="status"></div>
+      <dialog id="logoutDialog" class="logout-dialog">
+        <form method="dialog" class="panel">
+          <h2 id="logoutDialogTitle"></h2>
+          <p>¿Estás seguro de que querés cerrar la sesión?</p>
+          <div class="form-save-actions"><button id="logoutConfirm" value="confirm" type="submit">SÍ, CERRAR</button><button class="ghost" value="cancel" type="submit">NO, CANCELAR</button></div>
+        </form>
+      </dialog>
     </main>
     <script src="config.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
- 
