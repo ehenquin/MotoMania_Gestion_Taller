@@ -14,6 +14,7 @@ const $ = (s) => document.querySelector(s),
     );
 const state = {
   token: "",
+  role: "",
   db: {},
   view: "dashboard",
   loading: false,
@@ -277,21 +278,68 @@ function showLoading(message = "Preparando el panel…") {
   $("#content").innerHTML =
     `<div class="panel loading-state"><div><div class="spinner"></div><strong>${message}</strong><p>Estamos sincronizando la información del taller.</p></div></div>`;
 }
+function sanitizeDraftForRole(draft, role) {
+  if (!draft || role === "ADMIN") return draft;
+  if (draft.reception) delete draft.reception.Descuento;
+  if (draft.advance) draft.advance = { Importe: "", Medio: "Efectivo", Fecha: draft.advance.Fecha || localToday(), Observaciones: "" };
+  if (Array.isArray(draft.jobs)) draft.jobs = draft.jobs.map(({ PrecioUnitario, Subtotal, ...job }) => job);
+  return draft;
+}
+function sanitizeStoredIntakeDraft(role) {
+  try {
+    const draft = JSON.parse(localStorage.getItem(INTAKE_DRAFT_KEY) || "null");
+    if (!draft) return;
+    localStorage.setItem(INTAKE_DRAFT_KEY, JSON.stringify(sanitizeDraftForRole(draft, role)));
+  } catch (_) {
+    localStorage.removeItem(INTAKE_DRAFT_KEY);
+  }
+}
+function clearSensitiveSessionData(role = "EMPLEADO") {
+  state.db = {};
+  state.quick = null;
+  state.paymentOrderContextId = "";
+  state.navStack = [];
+  if (state.intake) sanitizeDraftForRole(state.intake, role);
+  sanitizeStoredIntakeDraft(role);
+}
 function showLogin(message = "") {
   state.galleryAbortController?.abort();
   state.galleryAbortController = null;
   state.token = "";
-  state.db = {};
+  state.role = "";
+  clearSensitiveSessionData("EMPLEADO");
   state.loading = false;
   state.photoSources.clear();
   state.photoRequests.clear();
+  localStorage.removeItem("motomania_session");
   $("#app").hidden = true;
   $("#login").hidden = false;
+  document.documentElement.dataset.role = "";
+  $("#adminMode").hidden = true;
   $("#logout").hidden = true;
   $("#refresh").hidden = true;
-  $("#password").focus();
   setConnection("online");
   if (message) toast(message);
+}
+function showAdminLogin() {
+  $("#profileRole").value = "ADMIN";
+  $("#app").hidden = true;
+  $("#login").hidden = false;
+  $("#password").focus();
+}
+function isAdmin() {
+  return state.role === "ADMIN";
+}
+function applySession(role) {
+  clearSensitiveSessionData(role);
+  state.role = role;
+  document.documentElement.dataset.role = role;
+  $("#login").hidden = true;
+  $("#app").hidden = false;
+  $("#adminMode").hidden = false;
+  $("#adminMode").textContent = `Modo: ${role === "ADMIN" ? "ENCARGADO" : "EMPLEADO"}`;
+  $("#logout").hidden = false;
+  $("#refresh").hidden = false;
 }
 async function api(action, extra = {}, options = {}) {
   if (
@@ -358,7 +406,7 @@ async function api(action, extra = {}, options = {}) {
       (res.status === 401 || res.status === 403 || isSessionError(message))
     )
       throw new SessionExpiredError(
-        "Tu sesión venció o ya no es válida. Ingresá nuevamente.",
+        "La sesión administrativa venció o ya no es válida.",
       );
     throw new ApiResponseError(message, { status: res.status });
   }
@@ -386,6 +434,9 @@ async function load() {
   const started = performance.now();
   try {
     const db = await api("bootstrap");
+    if (!["ADMIN", "EMPLEADO"].includes(db?.Sesion?.role))
+      throw Error("El servidor no confirmó el perfil de la sesión.");
+    applySession(db.Sesion.role);
     state.db = {
       ...db,
       Clientes: Array.isArray(db?.Clientes) ? db.Clientes : [],
@@ -561,24 +612,32 @@ $("#loginForm").onsubmit = async (e) => {
   e.preventDefault();
   const submit = $("#loginSubmit"),
     started = performance.now();
+  const priorToken = state.token;
   submit.disabled = true;
   setConnection("loading");
   try {
-    const d = await api("login", { password: $("#password").value });
+    const profile = $("#profileRole").value;
+    const d = await api("login", { password: $("#password").value, profile });
     if (!d?.token) throw Error("El servidor no devolvió una sesión válida.");
     state.token = d.token;
     $("#password").value = "";
-    $("#login").hidden = true;
-    $("#app").hidden = false;
-    $("#logout").hidden = false;
-    $("#refresh").hidden = false;
+    clearSensitiveSessionData("EMPLEADO");
+    $("#app").hidden = true;
     showLoading("Acceso correcto. Cargando datos…");
     await load();
+    localStorage.setItem("motomania_session", JSON.stringify({ token: d.token }));
+    if (priorToken && priorToken !== d.token) {
+      try { await api("logout", { token: priorToken }); } catch (_) {}
+    }
     console.info(
       `[MOTOMANÍA] ingreso completo: ${(performance.now() - started).toFixed(0)} ms`,
     );
   } catch (err) {
+    try { if (state.token && state.token !== priorToken) await api("logout"); } catch (_) {}
     state.token = "";
+    localStorage.removeItem("motomania_session");
+    clearSensitiveSessionData("EMPLEADO");
+    $("#app").hidden = true;
     setConnection("error");
     toast(err.message);
   } finally {
@@ -600,7 +659,24 @@ $("#togglePassword").onclick = () => {
   $("#togglePassword").setAttribute("aria-pressed", String(!visible));
   input.focus();
 };
-$("#logout").onclick = () => showLogin();
+$("#adminMode").onclick = () => showAdminLogin();
+async function completeLogout() {
+  const token = state.token;
+  let revoked = false;
+  try {
+    if (token) { await api("logout"); revoked = true; }
+  } catch (error) {
+    toast("La sesión local fue eliminada, pero no se pudo confirmar la revocación en el servidor.");
+  }
+  showLogin(revoked ? "Sesión cerrada." : "Sesión local cerrada.");
+}
+$("#logout").onclick = () => {
+  $("#logoutDialogTitle").textContent = `VAS A CERRAR SESIÓN DE ${isAdmin() ? "ENCARGADO" : "EMPLEADO"}`;
+  $("#logoutDialog").showModal();
+};
+$("#logoutDialog").addEventListener("close", () => {
+  if ($("#logoutDialog").returnValue === "confirm") void completeLogout();
+});
 $("#refresh").onclick = () => withSession(load);
 $("#nav").onclick = async (e) => {
   const b = e.target.closest("[data-view]");
@@ -678,7 +754,7 @@ function totals(id) {
   return { total, paid, due: total - paid };
 }
 const money = (n) =>
-  new Intl.NumberFormat("es-AR", {
+  !isAdmin() ? "" : new Intl.NumberFormat("es-AR", {
     style: "currency",
     currency: "ARS",
     maximumFractionDigits: 2,
@@ -1134,6 +1210,8 @@ function printOrder(id) {
 }
 
 function render() {
+  if (!isAdmin() && ["Caja", "Servicios", "Repuestos", "Pagos", "Movimientos_Caja"].includes(state.view))
+    state.view = "dashboard";
   state.currentScreen = { kind: "view", view: state.view };
   state.galleryAbortController?.abort();
   state.galleryAbortController = null;
@@ -1646,7 +1724,7 @@ function persistIntake() {
     files?.length || state.intake.photoReselectRequired,
   );
   try {
-    localStorage.setItem(INTAKE_DRAFT_KEY, JSON.stringify(draft));
+    localStorage.setItem(INTAKE_DRAFT_KEY, JSON.stringify(sanitizeDraftForRole(draft, state.role)));
   } catch (_) {
     toast("No se pudo guardar el borrador local.");
   }
@@ -2255,16 +2333,16 @@ async function confirmIntake() {
             },
         motoId: intake.motoId || "",
         moto: intake.motoId ? null : intake.moto,
-        order: { ...intake.reception, Estado: "Recibida" },
+        order: isAdmin() ? { ...intake.reception, Estado: "Recibida" } : { FechaIngreso: intake.reception.FechaIngreso, Kilometraje: intake.reception.Kilometraje, Problema: intake.reception.Problema, Diagnostico: intake.reception.Diagnostico, FechaPrometida: intake.reception.FechaPrometida, Observaciones: intake.reception.Observaciones, Estado: "Recibida" },
         details: intake.jobs.map(
-          ({ Tipo, Descripcion, Cantidad, PrecioUnitario }) => ({
+          ({ Tipo, Descripcion, Cantidad, PrecioUnitario }) => (isAdmin() ? {
             Tipo,
             Descripcion,
             Cantidad,
             PrecioUnitario,
-          }),
+          } : { Tipo, Descripcion, Cantidad }),
         ),
-        advance: intake.advance.Importe
+        advance: isAdmin() && intake.advance.Importe
           ? {
               Fecha: intake.advance.Fecha,
               Importe: Number(intake.advance.Importe),
@@ -2748,7 +2826,7 @@ async function saveQuickIntake() {
     return toast("Completá patente, marca y modelo de la moto.");
   if (!q.order.FechaIngreso || !q.order.Problema.trim())
     return toast("Completá fecha y problema informado.");
-  if (Number(q.order.Descuento || 0) < 0)
+  if (isAdmin() && Number(q.order.Descuento || 0) < 0)
     return toast("El descuento no puede ser negativo.");
   if (existingBike && recordBike(q.motoId)?.IDCliente !== q.clientId)
     return toast("La moto no pertenece al cliente seleccionado.");
@@ -2782,12 +2860,8 @@ async function saveQuickIntake() {
           },
       motoId: existingBike ? q.motoId : "",
       moto: existingBike ? null : { ...q.moto, Activo: true },
-      order: {
-        ...q.order,
-        Estado: "Recibida",
-        Descuento: Number(q.order.Descuento || 0),
-      },
-      details: q.jobs,
+      order: isAdmin() ? { ...q.order, Estado: "Recibida", Descuento: Number(q.order.Descuento || 0) } : { FechaIngreso: q.order.FechaIngreso, Kilometraje: q.order.Kilometraje, Problema: q.order.Problema, Diagnostico: q.order.Diagnostico, FechaPrometida: q.order.FechaPrometida, Observaciones: q.order.Observaciones, Estado: "Recibida" },
+      details: q.jobs.map((job) => isAdmin() ? job : ({ Tipo: job.Tipo, Descripcion: job.Descripcion, Cantidad: job.Cantidad })),
       advance: null,
     });
     if (!result?.order?.IDOrden)
@@ -4470,7 +4544,9 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
   }[table];
   const existing = (state.db[table] || []).find((row) => row[pk] === id) || {};
   const row = { ...existing, ...preset };
-  const formFields = isOrderEdit ? orderEditFields(table) : def.fields;
+  const formFields = !isAdmin() && table === "Detalle_Trabajo"
+    ? (id ? ["Tipo", "Descripcion", "Cantidad"] : ["IDOrden", "Tipo", "Descripcion", "Cantidad"])
+    : (isOrderEdit ? orderEditFields(table) : def.fields);
   const fields = formFields
     .map((field) => {
       const value = field === "Activo" && ["Servicios", "Repuestos"].includes(table)
@@ -4913,6 +4989,7 @@ function orderDetail(id, remember = true) {
   const context = orderContext(id);
   const bike = context.bike;
   const client = context.client;
+  const adminMode = isAdmin();
   $("#content").innerHTML = `
     <button class="ghost" id="back">← Volver</button>
 
@@ -4924,7 +5001,7 @@ function orderDetail(id, remember = true) {
     </section>
 
     <div class="panel order-work-panel">
-      <div class="order-work-heading"><div><p class="eyebrow">Información del trabajo</p><b>${esc(o.Estado)}</b></div><div class="order-context-actions"><button type="button" data-order-edit="Ordenes_Trabajo:${esc(id)}">✏️ Editar trabajo</button>${!["Entregada", "Cancelada"].includes(o.Estado) ? `<button data-deliver="${esc(id)}">💰 Registrar pago y entregar</button>` : ""}</div></div>
+      <div class="order-work-heading"><div><p class="eyebrow">Información del trabajo</p><b>${esc(o.Estado)}</b></div><div class="order-context-actions"><button type="button" data-order-edit="Ordenes_Trabajo:${esc(id)}">✏️ Editar trabajo</button>${adminMode && !["Entregada", "Cancelada"].includes(o.Estado) ? `<button data-deliver="${esc(id)}">💰 Registrar pago y entregar</button>` : ""}</div></div>
       <p>Problema: ${esc(o.Problema)}</p>
       <p>Diagnóstico: ${esc(o.Diagnostico)}</p>
       <p>Kilometraje: ${esc(o.Kilometraje)}</p>
@@ -4941,8 +5018,8 @@ function orderDetail(id, remember = true) {
         .map(
           (x) => `
         <div class="item concept-row">
-          <div><strong>${esc(x.Tipo)} · ${esc(x.Descripcion)}</strong><small>${esc(x.Cantidad)} × ${money(Number(x.PrecioUnitario))} = ${money(Number(x.Subtotal))}</small></div>
-          <div class="concept-actions"><button class="ghost" type="button" data-edit-concept="${esc(x.IDDetalle)}">✏️ Editar</button><button class="danger-button" type="button" data-delete-concept="${esc(x.IDDetalle)}">🗑️ Borrar</button></div>
+          <div><strong>${esc(x.Tipo)} · ${esc(x.Descripcion)}</strong><small>${adminMode ? `${esc(x.Cantidad)} × ${money(Number(x.PrecioUnitario))} = ${money(Number(x.Subtotal))}` : `Cantidad: ${esc(x.Cantidad)}`}</small></div>
+          <div class="concept-actions"><button class="ghost" type="button" data-edit-concept="${esc(x.IDDetalle)}">✏️ Editar</button>${adminMode ? `<button class="danger-button" type="button" data-delete-concept="${esc(x.IDDetalle)}">🗑️ Borrar</button>` : ""}</div>
         </div>
       `,
         )
@@ -4971,10 +5048,10 @@ function orderDetail(id, remember = true) {
           <input name="Cantidad" type="number" min="0.01" step="any" value="1" required>
         </label>
 
-        <label>
+        ${adminMode ? `<label>
           Precio unitario ($)
           <input name="PrecioUnitario" type="number" min="0" step="any" required>
-        </label>
+        </label>` : ""}
 
         <button id="inlineConceptSubmit" type="submit">
           Guardar concepto
@@ -4982,7 +5059,7 @@ function orderDetail(id, remember = true) {
       </div>
     </form>
 
-    <h2>Pagos</h2>
+    ${adminMode ? `<h2>Pagos</h2>
 
     <div class="panel">
       <p>
@@ -5042,7 +5119,7 @@ function orderDetail(id, remember = true) {
           `
           : ""
       }
-    </div>
+    </div>` : ""}
 
     <h2>Fotografías</h2>
 
@@ -5604,3 +5681,19 @@ function wire() {
       }),
   );
 }
+
+// Restaura solamente una credencial opaca; el servidor determina el perfil real.
+async function restoreSession() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("motomania_session") || "null");
+    if (!saved?.token) return showLogin();
+    state.token = String(saved.token);
+    showLoading("Restaurando sesión…");
+    $("#app").hidden = false;
+    $("#login").hidden = true;
+    await load();
+  } catch (_) {
+    showLogin("La sesión guardada ya no es válida. Ingresá nuevamente.");
+  }
+}
+void restoreSession();
