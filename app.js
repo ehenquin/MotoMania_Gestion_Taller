@@ -29,6 +29,8 @@ const state = {
   orderFilter: "",
   quick: null,
   photoQueues: new Map(),
+  photoUploadOrders: new Set(),
+  orderPhotoPreviewUrl: "",
   navStack: [],
   currentScreen: { kind: "view", view: "dashboard" },
 
@@ -42,6 +44,9 @@ const state = {
 };
 const PHOTO_UPLOAD_CONCURRENCY = 2;
 const MAX_VIDEO_BYTES = 8 * 1024 * 1024;
+const MAX_SOURCE_VIDEO_BYTES = 250 * 1024 * 1024;
+const VIDEO_CLIP_SECONDS = 10;
+const VIDEO_TARGET_FPS = 24;
 const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const VIDEO_MIME_TYPES = ["video/mp4", "video/webm", "video/quicktime"];
 
@@ -307,6 +312,7 @@ function clearSensitiveSessionData(role = "EMPLEADO") {
   sanitizeStoredIntakeDraft(role);
 }
 function showLogin(message = "") {
+  releaseOrderPhotoPreviewUrl();
   state.galleryAbortController?.abort();
   state.galleryAbortController = null;
   state.token = "";
@@ -725,7 +731,7 @@ $("#nav").onclick = async (e) => {
   }
 };
 window.addEventListener("beforeunload", (event) => {
-  const photosPending = [...state.photoQueues.values()].some((queue) => queue.some((item) => item.status === "pending" || item.status === "uploading" || item.status === "failed"));
+  const photosPending = [...state.photoQueues.values()].some((queue) => queue.some((item) => item.status === "pending" || item.status === "processing" || item.status === "uploading" || item.status === "failed"));
   if (state.view === "intake" && state.intake) {
     captureIntake();
     persistIntake();
@@ -1260,6 +1266,7 @@ function printOrder(id) {
 }
 
 function render() {
+  releaseOrderPhotoPreviewUrl();
   if (!isAdmin() && ["Caja", "Servicios", "Repuestos", "Pagos", "Movimientos_Caja"].includes(state.view))
     state.view = "dashboard";
   state.currentScreen = { kind: "view", view: state.view };
@@ -1996,7 +2003,7 @@ function renderIntake(capture = true) {
   } else if (i.step === 3) {
     body = `<div class="fields"><label>Fecha de ingreso<input data-intake-reception="FechaIngreso" type="date" value="${esc(i.reception.FechaIngreso)}" required></label><label>Kilometraje<input data-intake-reception="Kilometraje" type="number" min="0" value="${esc(i.reception.Kilometraje)}"></label><label>Estado<input value="Recibida" readonly></label><label>Fecha prometida<input data-intake-reception="FechaPrometida" type="date" value="${esc(i.reception.FechaPrometida)}"></label><label class="intake-wide">Problema informado<textarea data-intake-reception="Problema" required>${esc(i.reception.Problema)}</textarea></label><label class="intake-wide">Observaciones<textarea data-intake-reception="Observaciones">${esc(i.reception.Observaciones)}</textarea></label></div>`;
   } else if (i.step === 4) {
-    body = `<p class="muted">Las fotos y videos se subirán sólo después de crear la orden. Los borradores no conservan archivos seleccionados. Videos: máximo 8 MB.</p><div class="intake-photo-actions photo-source-actions"><label class="photo-source-button photo-source-camera"><span class="photo-source-icon" aria-hidden="true">📷</span><span><strong>Sacar foto</strong><small>Abre la cámara del dispositivo</small></span><input id="intakeCamera" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" multiple hidden></label><label class="photo-source-button photo-source-video"><span class="photo-source-icon" aria-hidden="true">🎥</span><span><strong>Grabar video</strong><small>Usa la cámara cuando el dispositivo lo permite</small></span><input id="intakeVideo" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" capture="environment" hidden></label><label class="photo-source-button photo-source-file"><span class="photo-source-icon" aria-hidden="true">🖼️</span><span><strong>Elegir archivos</strong><small>Fotos o videos existentes</small></span><input id="intakeFiles" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" multiple hidden></label></div><div id="intakePreviews" class="intake-previews"></div>`;
+    body = `<p class="muted">Las fotos y videos se subirán sólo después de crear la orden. Los borradores no conservan archivos seleccionados. Los videos se preparan automáticamente a 10 segundos y 480p, conservando el audio.</p><div class="intake-photo-actions photo-source-actions"><label class="photo-source-button photo-source-camera"><span class="photo-source-icon" aria-hidden="true">📷</span><span><strong>Sacar foto</strong><small>Abre la cámara del dispositivo</small></span><input id="intakeCamera" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" multiple hidden></label><label class="photo-source-button photo-source-video"><span class="photo-source-icon" aria-hidden="true">🎥</span><span><strong>Grabar video</strong><small>Usa la cámara cuando el dispositivo lo permite</small></span><input id="intakeVideo" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" capture="environment" hidden></label><label class="photo-source-button photo-source-file"><span class="photo-source-icon" aria-hidden="true">🖼️</span><span><strong>Elegir archivos</strong><small>Fotos o videos existentes</small></span><input id="intakeFiles" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" multiple hidden></label></div><div id="intakePreviews" class="intake-previews"></div>`;
   } else if (i.step === 5) {
     const catalog = intakeCatalog();
     const conceptControl = catalog.length
@@ -2020,7 +2027,7 @@ function renderIntake(capture = true) {
     const stateText = i.files
       .map(
         (file) =>
-          `${file.file.name}: ${file.status === "saved" ? "guardada" : file.status === "error" ? "pendiente por error" : file.status === "uploading" ? "subiendo" : "seleccionada"}`,
+          `${file.file.name}: ${file.status === "saved" ? "guardada" : file.status === "error" ? "pendiente por error" : file.status === "processing" ? "preparando video" : file.status === "uploading" ? "subiendo" : "seleccionada"}`,
       )
       .join(" · ");
     const status = document.createElement("p");
@@ -2055,7 +2062,9 @@ function refreshIntakePreviews() {
       image.setAttribute("aria-label", "Previsualización de video");
     }
     status.textContent =
-      item.status === "uploading"
+      item.status === "processing"
+        ? "Preparando video…"
+        : item.status === "uploading"
         ? "Subiendo…"
         : item.status === "saved"
           ? "Guardada"
@@ -2064,7 +2073,7 @@ function refreshIntakePreviews() {
             : "Seleccionada";
     remove.type = "button";
     remove.textContent = "Quitar";
-    remove.disabled = item.status === "uploading";
+    remove.disabled = item.status === "processing" || item.status === "uploading";
     remove.onclick = () => {
       const removed = intake.files.splice(index, 1)[0];
       if (removed?.url) URL.revokeObjectURL(removed.url);
@@ -2207,14 +2216,14 @@ function wireIntake() {
     const typeAccepted = selected.filter(isSupportedMediaFile);
     const oversized = typeAccepted.filter(
       (file) =>
-        file.size > (isVideoFile(file) ? MAX_VIDEO_BYTES : MAX_INTAKE_PHOTO_BYTES),
+        file.size > (isVideoFile(file) ? MAX_SOURCE_VIDEO_BYTES : MAX_INTAKE_PHOTO_BYTES),
     );
     const available = Math.max(0, MAX_INTAKE_PHOTOS - i.files.length);
     const accepted = typeAccepted
       .filter(
         (file) =>
           file.size <=
-          (isVideoFile(file) ? MAX_VIDEO_BYTES : MAX_INTAKE_PHOTO_BYTES),
+          (isVideoFile(file) ? MAX_SOURCE_VIDEO_BYTES : MAX_INTAKE_PHOTO_BYTES),
       )
       .slice(0, available);
     const rejected = selected.length - typeAccepted.length;
@@ -2227,13 +2236,13 @@ function wireIntake() {
       toast("Solo se admiten fotos JPG, PNG o WEBP y videos MP4, WebM o MOV.");
     if (oversized.length)
       toast(
-        "Las fotos deben pesar hasta 12 MB antes de procesarse y los videos hasta 8 MB.",
+        "Las fotos deben pesar hasta 12 MB y el video original hasta 250 MB para poder procesarlo en este dispositivo.",
       );
     if (
       typeAccepted.filter(
         (file) =>
           file.size <=
-          (isVideoFile(file) ? MAX_VIDEO_BYTES : MAX_INTAKE_PHOTO_BYTES),
+          (isVideoFile(file) ? MAX_SOURCE_VIDEO_BYTES : MAX_INTAKE_PHOTO_BYTES),
       )
         .length > available
     )
@@ -2354,55 +2363,60 @@ async function uploadIntakePhotos(intake, orderId, setProgress) {
     .filter(({ index }) => !intake.files[index].confirmed);
   if (!pending.length) return [];
   let startedUploads = 0;
-  const results = await Promise.allSettled(
-    pending.map(async ({ file, index }) => {
-      startedUploads += 1;
-      setProgress(
-        `Subiendo archivos (${startedUploads}/${pending.length})…`,
+  const results = [];
+  for (const { file, index } of pending) {
+    startedUploads += 1;
+    try {
+      const encoded = await encodeMediaFile(file.file, (stage) => {
+        file.status = stage;
+        setProgress(
+          stage === "processing"
+            ? "Preparando video…"
+            : isVideoFile(file.file)
+              ? "Subiendo video…"
+              : `Subiendo archivos (${startedUploads}/${pending.length})…`,
+        );
+        refreshIntakePreviews();
+      });
+      const saved = confirmUploadedPhoto(
+        await api("uploadPhoto", {
+          IDOrden: orderId,
+          Tipo: "Ingreso",
+          ...encoded,
+          uploadKey:
+            file.uploadKey ||
+            (file.uploadKey = uploadKey(`intake_${intake.id}_${index}`)),
+        }),
+        orderId,
       );
-      file.status = "uploading";
-      try {
-        const encoded = await encodeMediaFile(file.file);
-        const saved = confirmUploadedPhoto(
-          await api("uploadPhoto", {
-            IDOrden: orderId,
-            Tipo: "Ingreso",
-            ...encoded,
-            uploadKey:
-              file.uploadKey ||
-              (file.uploadKey = uploadKey(`intake_${intake.id}_${index}`)),
-          }),
-          orderId,
-        );
-        intake.files[index].confirmed = true;
-        intake.files[index].status = "saved";
-        intake.files[index].error = "";
-        intake.photos = intake.files.map((item) => ({
-          name: item.file.name,
-          type: item.file.type,
-          status: item.status || "selected",
-        }));
-        persistIntake();
-        const existing = (state.db.Fotos || []).findIndex(
-          (photo) => photo.IDFoto === saved.IDFoto,
-        );
-        if (existing < 0) state.db.Fotos.push(saved);
-        else state.db.Fotos[existing] = saved;
-        return saved;
-      } catch (error) {
-        intake.files[index].status = "error";
-        intake.files[index].error =
-          error.message || "No se pudo subir la fotografía.";
-        intake.photos = intake.files.map((item) => ({
-          name: item.file.name,
-          type: item.file.type,
-          status: item.status || "selected",
-        }));
-        persistIntake();
-        throw error;
-      }
-    }),
-  );
+      intake.files[index].confirmed = true;
+      intake.files[index].status = "saved";
+      intake.files[index].error = "";
+      intake.photos = intake.files.map((item) => ({
+        name: item.file.name,
+        type: item.file.type,
+        status: item.status || "selected",
+      }));
+      persistIntake();
+      const existing = (state.db.Fotos || []).findIndex(
+        (photo) => photo.IDFoto === saved.IDFoto,
+      );
+      if (existing < 0) state.db.Fotos.push(saved);
+      else state.db.Fotos[existing] = saved;
+      results.push({ status: "fulfilled", value: saved });
+    } catch (error) {
+      intake.files[index].status = "error";
+      intake.files[index].error =
+        error.message || "No se pudo preparar o subir el archivo.";
+      intake.photos = intake.files.map((item) => ({
+        name: item.file.name,
+        type: item.file.type,
+        status: item.status || "selected",
+      }));
+      persistIntake();
+      results.push({ status: "rejected", reason: error });
+    }
+  }
   return results;
 }
 async function confirmIntake() {
@@ -5227,13 +5241,18 @@ function photoQueueFor(orderId) {
   if (!state.photoQueues.has(orderId)) state.photoQueues.set(orderId, []);
   return state.photoQueues.get(orderId);
 }
+function releaseOrderPhotoPreviewUrl() {
+  if (!state.orderPhotoPreviewUrl) return;
+  URL.revokeObjectURL(state.orderPhotoPreviewUrl);
+  state.orderPhotoPreviewUrl = "";
+}
 function addQueuedPhotos(orderId, files, type) {
   const queue = photoQueueFor(orderId);
   [...files].forEach((file) => {
     if (!isSupportedMediaFile(file))
       return toast("Solo se admiten fotos JPG, PNG o WEBP y videos MP4, WebM o MOV.");
-    if (isVideoFile(file) && file.size > MAX_VIDEO_BYTES)
-      return toast("El video supera el límite de 8 MB.");
+    if (isVideoFile(file) && file.size > MAX_SOURCE_VIDEO_BYTES)
+      return toast("El video original supera 250 MB y no puede procesarse de forma segura en este dispositivo.");
     const duplicate = queue.some((item) => item.file.name === file.name && item.file.size === file.size && item.file.lastModified === file.lastModified);
     if (!duplicate) queue.push({ id: uploadKey("queued"), file, type, url: URL.createObjectURL(file), status: "pending", error: "" });
   });
@@ -5247,36 +5266,55 @@ function renderPhotoQueue(orderId) {
     const card = document.createElement("article"); card.className = `queued-photo is-${item.status}`;
     const image = document.createElement(isVideoFile(item.file) ? "video" : "img"); image.src = item.url; image.alt = item.file.name;
     if (image.tagName === "VIDEO") { image.muted = true; image.preload = "metadata"; image.setAttribute("aria-label", `Video: ${item.file.name}`); card.classList.add("is-video"); }
-    const text = document.createElement("span"); text.textContent = item.status === "failed" ? `Falló: ${item.error}` : item.status === "uploading" ? "Subiendo…" : item.status === "saved" ? "Guardada" : "Pendiente";
-    const remove = document.createElement("button"); remove.type = "button"; remove.className = "ghost"; remove.textContent = "Quitar"; remove.disabled = item.status === "uploading" || item.status === "saved";
+    const text = document.createElement("span"); text.textContent = item.status === "failed" ? `Falló: ${item.error}` : item.status === "processing" ? "Preparando video…" : item.status === "uploading" ? (isVideoFile(item.file) ? "Subiendo video…" : "Subiendo…") : item.status === "saved" ? "Guardada" : "Pendiente";
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "ghost"; remove.textContent = "Quitar"; remove.disabled = item.status === "processing" || item.status === "uploading" || item.status === "saved";
     remove.onclick = () => { const index = queue.indexOf(item); if (index >= 0) { URL.revokeObjectURL(item.url); queue.splice(index, 1); renderPhotoQueue(orderId); } };
     image.onclick = () => isVideoFile(item.file) ? openMediaModal(item.url, item.file.name, true) : openPhotoModal(item.url, item.file.name); card.append(image, text, remove); return card;
   }));
+  const uploadActive = state.photoUploadOrders.has(orderId);
   const ready = queue.filter((item) => item.status === "pending" || item.status === "failed").length;
   const failed = queue.filter((item) => item.status === "failed").length;
   upload.textContent = `☁️ Subir todas (${ready})`; upload.disabled = !ready;
+  upload.disabled = uploadActive || !ready;
   retry.hidden = !failed;
+  retry.disabled = uploadActive || !failed;
 }
 async function uploadQueuedPhotos(orderId, failedOnly = false) {
+  if (state.photoUploadOrders.has(orderId)) return;
   const queue = photoQueueFor(orderId);
   const selected = queue.filter((item) => (failedOnly ? item.status === "failed" : item.status === "pending" || item.status === "failed"));
   if (!selected.length) return;
+  state.photoUploadOrders.add(orderId);
+  renderPhotoQueue(orderId);
   let next = 0;
   const worker = async () => {
     while (next < selected.length) {
-      const item = selected[next++]; item.status = "uploading"; item.error = ""; renderPhotoQueue(orderId);
+      const item = selected[next++]; item.error = "";
       try {
-        const saved = confirmUploadedPhoto(await api("uploadPhoto", { IDOrden: orderId, Tipo: item.type, ...(await encodeMediaFile(item.file)), uploadKey: item.id }), orderId);
+        const encoded = await encodeMediaFile(item.file, (stage) => {
+          item.status = stage;
+          renderPhotoQueue(orderId);
+        });
+        const saved = confirmUploadedPhoto(await api("uploadPhoto", { IDOrden: orderId, Tipo: item.type, ...encoded, uploadKey: item.id }), orderId);
         updateDbRecord("Fotos", saved, "IDFoto"); item.status = "saved";
       } catch (error) { item.status = "failed"; item.error = error.message || "No se pudo subir"; if (error instanceof SessionExpiredError) showLogin(error.message); }
       renderPhotoQueue(orderId);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(PHOTO_UPLOAD_CONCURRENCY, selected.length) }, worker));
+  const concurrency = selected.some((item) => isVideoFile(item.file))
+    ? 1
+    : PHOTO_UPLOAD_CONCURRENCY;
+  try {
+    await Promise.all(Array.from({ length: Math.min(concurrency, selected.length) }, worker));
+  } finally {
+    state.photoUploadOrders.delete(orderId);
+    renderPhotoQueue(orderId);
+  }
   if (state.activeOrderId === orderId) { toast("Subida de archivos finalizada."); orderDetail(orderId, false); }
 }
 
 function orderDetail(id, remember = true) {
+  releaseOrderPhotoPreviewUrl();
   const o = state.db.Ordenes_Trabajo.find((x) => x.IDOrden === id);
   if (!o) return;
   const retainedQueue = state.photoQueues.get(id);
@@ -5487,7 +5525,7 @@ function orderDetail(id, remember = true) {
       </form>
 
       <small>
-        Las fotos y videos se almacenan de forma privada en Google Drive. Videos: máximo 8 MB.
+        Las fotos y videos se almacenan de forma privada en Google Drive. Los videos se preparan a 10 segundos y 480p antes de subirlos.
       </small>
     </div>
 
@@ -5545,15 +5583,19 @@ function orderDetail(id, remember = true) {
   const previewSelectedPhoto = (file, otherInput) => {
     if (!file) return;
     otherInput.value = "";
+    releaseOrderPhotoPreviewUrl();
     const image = document.createElement(isVideoFile(file) ? "video" : "img");
     const url = URL.createObjectURL(file);
+    state.orderPhotoPreviewUrl = url;
     image.src = url;
     image.alt = "Previsualización de la fotografía seleccionada";
     if (image.tagName === "VIDEO") {
       image.muted = true;
       image.preload = "metadata";
     }
-    image.onload = () => URL.revokeObjectURL(url);
+    image.onload = () => {
+      if (state.orderPhotoPreviewUrl === url) releaseOrderPhotoPreviewUrl();
+    };
     const description = document.createElement("span");
     description.textContent = file.name;
     photoPreview.classList.remove("muted");
@@ -5828,20 +5870,255 @@ function fileToBase64(file) {
     reader.readAsDataURL(file);
   });
 }
-async function encodeMediaFile(file) {
+function videoRecorderOptions(stream, duration) {
+  if (typeof MediaRecorder !== "function" || typeof MediaRecorder.isTypeSupported !== "function")
+    throw new Error("Este navegador no permite comprimir videos conservando el audio.");
+  const candidates = [
+    { mime: 'video/mp4;codecs="avc1.42E01E,mp4a.40.2"', type: "video/mp4", extension: "mp4", videoCodec: "h264", audioCodec: "aac" },
+    { mime: 'video/webm;codecs="vp9,opus"', type: "video/webm", extension: "webm", videoCodec: "vp9", audioCodec: "opus" },
+    { mime: 'video/webm;codecs="vp8,opus"', type: "video/webm", extension: "webm", videoCodec: "vp8", audioCodec: "opus" },
+  ].filter((option) => MediaRecorder.isTypeSupported(option.mime));
+  if (!candidates.length)
+    throw new Error("Este navegador no ofrece un formato MP4 o WebM compatible para procesar el video.");
+  const audioBitsPerSecond = 96000;
+  const desiredTotalBitrate = Math.round((1.8 * 1024 * 1024 * 8) / Math.max(1, duration));
+  const totalBitrate = Math.min(2500000, Math.max(900000, desiredTotalBitrate));
+  for (const option of candidates) {
+    try {
+      return {
+        recorder: new MediaRecorder(stream, {
+          mimeType: option.mime,
+          videoBitsPerSecond: Math.max(650000, totalBitrate - audioBitsPerSecond),
+          audioBitsPerSecond,
+        }),
+        ...option,
+      };
+    } catch (_) {}
+  }
+  throw new Error("El navegador anunció soporte de video, pero no pudo iniciar el codificador con audio.");
+}
+
+function bytesContainAscii(bytes, text) {
+  const pattern = [...text].map((character) => character.charCodeAt(0));
+  outer: for (let index = 0; index <= bytes.length - pattern.length; index += 1) {
+    for (let offset = 0; offset < pattern.length; offset += 1) {
+      if (bytes[index + offset] !== pattern[offset]) continue outer;
+    }
+    return true;
+  }
+  return false;
+}
+
+async function validateRecordedCodecs(blob, output) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const has = (marker) => bytesContainAscii(bytes, marker);
+  const validVideo = output.videoCodec === "h264"
+    ? has("avc1") || has("avc3")
+    : output.videoCodec === "vp9"
+      ? has("V_VP9")
+      : has("V_VP8");
+  const validAudio = output.audioCodec === "aac" ? has("mp4a") : has("A_OPUS");
+  if (!validVideo || !validAudio) {
+    throw new Error(
+      `El navegador generó códecs distintos de ${output.videoCodec.toUpperCase()}/${output.audioCodec.toUpperCase()}. No se subirá ese archivo.`,
+    );
+  }
+}
+
+async function resumeAudioContextWithTimeout(audioContext, timeoutMs = 5000) {
+  let timeout = 0;
+  try {
+    await Promise.race([
+      audioContext.resume(),
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("El navegador tardó demasiado en habilitar el audio.")),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } catch (error) {
+    throw new Error(`No se pudo habilitar el audio: ${error.message || error}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (audioContext.state !== "running")
+    throw new Error("El navegador bloqueó el procesamiento del audio. Tocá nuevamente Subir e intentá otra vez.");
+}
+
+function videoMetadata(video) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("El navegador tardó demasiado en abrir el video.")),
+      15000,
+    );
+    video.onloadeddata = () => {
+      clearTimeout(timeout);
+      if (
+        (!(Number.isFinite(video.duration) || video.duration === Infinity) ||
+          video.duration <= 0) ||
+        !video.videoWidth ||
+        !video.videoHeight
+      )
+        reject(new Error("No se pudo leer la duración o resolución del video."));
+      else resolve();
+    };
+    video.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error("El formato o códec del video no puede decodificarse en este navegador."));
+    };
+  });
+}
+
+async function processVideoFile(file) {
+  if (!isVideoFile(file)) throw new Error("El archivo seleccionado no es un video compatible.");
+  if (file.size > MAX_SOURCE_VIDEO_BYTES)
+    throw new Error("El video original supera 250 MB y no puede procesarse de forma segura en este dispositivo.");
+  if (
+    typeof MediaStream !== "function" ||
+    typeof HTMLCanvasElement === "undefined" ||
+    typeof HTMLCanvasElement.prototype.captureStream !== "function"
+  )
+    throw new Error("Este navegador no permite reducir el video a 480p.");
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass)
+    throw new Error("Este navegador no permite conservar el audio durante el procesamiento.");
+
+  const sourceUrl = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  const canvas = document.createElement("canvas");
+  let canvasStream = null;
+  let combinedStream = null;
+  let audioContext = null;
+  let audioSource = null;
+  let audioDestination = null;
+  let frameTimer = 0;
+  let safetyTimer = 0;
+  try {
+    video.preload = "auto";
+    video.playsInline = true;
+    video.volume = 1;
+    const metadataReady = videoMetadata(video);
+    video.src = sourceUrl;
+    await metadataReady;
+
+    const landscape = video.videoWidth >= video.videoHeight;
+    const maxWidth = landscape ? 854 : 480;
+    const maxHeight = landscape ? 480 : 854;
+    const scale = Math.min(1, maxWidth / video.videoWidth, maxHeight / video.videoHeight);
+    canvas.width = Math.max(2, Math.floor((video.videoWidth * scale) / 2) * 2);
+    canvas.height = Math.max(2, Math.floor((video.videoHeight * scale) / 2) * 2);
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) throw new Error("No se pudo preparar la imagen del video.");
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    audioContext = new AudioContextClass();
+    audioSource = audioContext.createMediaElementSource(video);
+    audioDestination = audioContext.createMediaStreamDestination();
+    audioSource.connect(audioDestination);
+    await resumeAudioContextWithTimeout(audioContext);
+    if (audioContext.state !== "running")
+      throw new Error("El navegador bloqueó el procesamiento del audio. Tocá nuevamente Subir e intentá otra vez.");
+
+    canvasStream = canvas.captureStream(VIDEO_TARGET_FPS);
+    const videoTrack = canvasStream.getVideoTracks()[0];
+    const audioTrack = audioDestination.stream.getAudioTracks()[0];
+    if (!videoTrack) throw new Error("No se pudo generar la pista de video reducida.");
+    if (!audioTrack) throw new Error("No se pudo conservar la pista de audio original.");
+    combinedStream = new MediaStream([videoTrack, audioTrack]);
+    if (combinedStream.getAudioTracks().length !== 1)
+      throw new Error("El video procesado no contiene una pista de audio.");
+
+    const clipDuration = Number.isFinite(video.duration)
+      ? Math.min(VIDEO_CLIP_SECONDS, video.duration)
+      : VIDEO_CLIP_SECONDS;
+    const output = videoRecorderOptions(combinedStream, clipDuration);
+    const chunks = [];
+    const blob = await new Promise((resolve, reject) => {
+      let finalError = null;
+      let stopping = false;
+      const stop = (error = null) => {
+        if (stopping) return;
+        stopping = true;
+        finalError = error;
+        video.pause();
+        clearInterval(frameTimer);
+        clearTimeout(safetyTimer);
+        if (output.recorder.state !== "inactive") output.recorder.stop();
+        else if (error) reject(error);
+      };
+      output.recorder.ondataavailable = (event) => {
+        if (event.data?.size) chunks.push(event.data);
+      };
+      output.recorder.onerror = (event) =>
+        stop(new Error(event.error?.message || "Falló la compresión del video."));
+      output.recorder.onstop = () => {
+        if (finalError) reject(finalError);
+        else if (!chunks.length) reject(new Error("El navegador no generó datos de video."));
+        else resolve(new Blob(chunks, { type: output.type }));
+      };
+      video.onended = () => stop();
+      output.recorder.start(250);
+      frameTimer = setInterval(() => {
+        if (video.currentTime >= clipDuration) return stop();
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      }, Math.round(1000 / VIDEO_TARGET_FPS));
+      safetyTimer = setTimeout(
+        () => stop(new Error("El procesamiento del video no finalizó correctamente.")),
+        Math.ceil(clipDuration * 1000) + 5000,
+      );
+      video.play().catch(() =>
+        stop(new Error("El navegador no pudo reproducir el video para procesarlo.")),
+      );
+    });
+
+    if (!blob.size) throw new Error("El video procesado quedó vacío.");
+    await validateRecordedCodecs(blob, output);
+    if (blob.size > MAX_VIDEO_BYTES)
+      throw new Error("El video procesado supera 8 MB. Probá grabarlo nuevamente con menos movimiento.");
+    const baseName = String(file.name || "video").replace(/\.[^.]+$/, "");
+    return new File(
+      [blob],
+      `${baseName}_10s_480p.${output.extension}`,
+      { type: output.type, lastModified: Date.now() },
+    );
+  } catch (error) {
+    throw new Error(`No se pudo preparar el video. ${error.message || error}`);
+  } finally {
+    clearInterval(frameTimer);
+    clearTimeout(safetyTimer);
+    video.pause();
+    combinedStream?.getTracks().forEach((track) => track.stop());
+    canvasStream?.getTracks().forEach((track) => track.stop());
+    audioSource?.disconnect();
+    audioDestination?.disconnect();
+    if (audioContext && audioContext.state !== "closed") {
+      try { await audioContext.close(); } catch (_) {}
+    }
+    video.removeAttribute("src");
+    video.load();
+    canvas.width = 0;
+    canvas.height = 0;
+    URL.revokeObjectURL(sourceUrl);
+  }
+}
+
+async function encodeMediaFile(file, onStage = () => {}) {
   if (!isVideoFile(file)) {
+    onStage("uploading");
     return {
       base64: await shrink(file),
       mimeType: "image/jpeg",
       originalName: String(file?.name || "foto.jpg").replace(/\.[^.]+$/, ".jpg"),
     };
   }
-  if (file.size > MAX_VIDEO_BYTES)
-    throw new Error("El video supera el límite de 8 MB.");
+  onStage("processing");
+  const processed = await processVideoFile(file);
+  onStage("uploading");
   return {
-    base64: await fileToBase64(file),
-    mimeType: String(file.type || "").toLowerCase(),
-    originalName: String(file.name || "video"),
+    base64: await fileToBase64(processed),
+    mimeType: String(processed.type || "").toLowerCase(),
+    originalName: String(processed.name || "video"),
   };
 }
 async function sourceImage(file) {
