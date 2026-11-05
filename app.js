@@ -25,6 +25,7 @@ const state = {
   photoRequests: new Map(),
   galleryAbortController: null,
   cashFilter: { period: "month", start: "", end: "" },
+  financialFilter: { period: "month", start: "", end: "" },
   orderFilter: "",
   quick: null,
   photoQueues: new Map(),
@@ -40,6 +41,9 @@ const state = {
   partFilter: "all",
 };
 const PHOTO_UPLOAD_CONCURRENCY = 2;
+const MAX_VIDEO_BYTES = 8 * 1024 * 1024;
+const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const VIDEO_MIME_TYPES = ["video/mp4", "video/webm", "video/quicktime"];
 
 function isCatalogActive(value) {
   if (typeof value === "boolean") return value;
@@ -421,6 +425,7 @@ async function load() {
     "Ordenes_Trabajo",
     "Detalle_Trabajo",
     "Pagos",
+    "Correcciones_Pagos",
     "Movimientos_Caja",
     "Fotos",
     "Servicios",
@@ -448,6 +453,9 @@ async function load() {
         ? db.Detalle_Trabajo
         : [],
       Pagos: Array.isArray(db?.Pagos) ? db.Pagos : [],
+      Correcciones_Pagos: Array.isArray(db?.Correcciones_Pagos)
+        ? db.Correcciones_Pagos
+        : [],
       Movimientos_Caja: Array.isArray(db?.Movimientos_Caja)
         ? db.Movimientos_Caja
         : [],
@@ -490,6 +498,7 @@ async function ensureTablesLoaded(tables, options = {}) {
     "Ordenes_Trabajo",
     "Detalle_Trabajo",
     "Pagos",
+    "Correcciones_Pagos",
     "Movimientos_Caja",
     "Fotos",
     "Servicios",
@@ -687,7 +696,7 @@ $("#nav").onclick = async (e) => {
       const leave = await confirmModal({
         title: "¿Salir del nuevo ingreso?",
         message:
-          "El borrador se conservará, pero las fotografías seleccionadas solo permanecen mientras esta página siga abierta.",
+          "El borrador se conservará, pero los archivos seleccionados solo permanecen mientras esta página siga abierta.",
         cancelText: "Seguir cargando",
         confirmText: "Guardar y salir",
       });
@@ -739,19 +748,41 @@ function cliente(id) {
   );
 }
 function totals(id) {
+  const summary = orderFinancialSummary(id);
+  return { total: summary.total, paid: summary.paid, due: summary.due };
+}
+function activePayment(payment) {
+  return payment && payment.Anulado !== true && String(payment.Anulado) !== "true";
+}
+function orderFinancialSummary(id) {
   const items = (state.db.Detalle_Trabajo || []).filter(
     (x) => x.IDOrden === id,
   );
   const o = state.db.Ordenes_Trabajo.find((x) => x.IDOrden === id);
-  const total = Math.max(
-    0,
-    items.reduce((s, x) => s + Number(x.Subtotal || 0), 0) -
-      Number(o?.Descuento || 0),
-  );
+  const sumType = (type) => items
+    .filter((item) => item.Tipo === type)
+    .reduce((sum, item) => sum + Number(item.Subtotal || 0), 0);
+  const services = sumType("Servicio");
+  const parts = sumType("Repuesto");
+  const unclassified = items
+    .filter((item) => !["Servicio", "Repuesto"].includes(item.Tipo))
+    .reduce((sum, item) => sum + Number(item.Subtotal || 0), 0);
+  const concepts = services + parts + unclassified;
+  const discount = Math.max(0, Number(o?.Descuento || 0));
+  const total = Math.max(0, concepts - discount);
   const paid = (state.db.Pagos || [])
-    .filter((x) => x.IDOrden === id)
+    .filter((x) => x.IDOrden === id && activePayment(x))
     .reduce((s, x) => s + Number(x.Importe || 0), 0);
-  return { total, paid, due: total - paid };
+  return {
+    services,
+    parts,
+    unclassified,
+    concepts,
+    discount,
+    total,
+    paid,
+    due: total - paid,
+  };
 }
 const money = (n) =>
   !isAdmin() ? "" : new Intl.NumberFormat("es-AR", {
@@ -1170,27 +1201,46 @@ function budgetWhatsApp(id) {
     return toast("El cliente no tiene un teléfono de WhatsApp válido.");
   const bikeName =
     [bike.Marca, bike.Modelo].filter(Boolean).join(" ") || "Moto";
+  const waText = (value, fallback = "") =>
+    String(value ?? fallback)
+      .replace(/\\/g, "\\\\")
+      .replace(/([*_~`])/g, "\\$1")
+      .replace(/[\r\n]+/g, " ")
+      .trim();
+  const quantityText = (value) =>
+    Number(value).toLocaleString("es-AR", { maximumFractionDigits: 2 });
   const lines = items.length
-    ? items.map(
-        (item) =>
-          `- ${item.Descripcion || "Concepto"}: ${money(Number(item.Subtotal) || Number(item.Cantidad || 0) * Number(item.PrecioUnitario || 0))}`,
-      )
-    : ["- Sin trabajos presupuestados todavía"];
+    ? items.map((item) => {
+        const quantity = Number(item.Cantidad || 0);
+        const subtotal =
+          Number(item.Subtotal) ||
+          quantity * Number(item.PrecioUnitario || 0);
+        const quantitySuffix =
+          quantity > 1 ? ` (x ${quantityText(quantity)})` : "";
+        return `• *${waText(item.Descripcion, "Concepto")}*${quantitySuffix} — ${money(subtotal)}`;
+      })
+    : ["• _Sin trabajos presupuestados todavía_"];
+  const separator = "━".repeat(14);
   const message = [
-    "MOTOMANÍA — PRESUPUESTO",
+    "🏍️ *MOTOMANÍA*",
+    "*PRESUPUESTO DE REPARACIÓN*",
+    separator,
     "",
-    `Cliente: ${client.Nombre || ""}`,
-    `Moto: ${bikeName}`,
-    `Patente: ${bike.Patente || "Sin patente"}`,
-    `Orden: ${order.IDOrden}`,
+    `*Cliente:* ${waText(client.Nombre)}`,
+    `*Moto:* ${waText(bikeName)}`,
+    `*Patente:* ${waText(bike.Patente, "Sin patente")}`,
+    `*Orden:* ${waText(order.IDOrden)}`,
     "",
-    "Trabajos y repuestos:",
+    "*TRABAJOS Y REPUESTOS*",
+    "",
     ...lines,
     "",
-    `TOTAL: ${money(summary.total)}`,
+    separator,
+    `*TOTAL: ${money(summary.total)}*`,
     "",
     "Por favor, confirmá si autorizás los trabajos presupuestados.",
-    "Gracias por confiar en MOTOMANÍA.",
+    "",
+    "_Gracias por confiar en MOTOMANÍA._",
   ].join("\n");
   window.open(
     `https://wa.me/${number}?text=${encodeURIComponent(message)}`,
@@ -1355,6 +1405,29 @@ function setupThemeToggle() {
 // Inicialización del selector visual.
 setupThemeToggle();
 
+function generalFinancialSummary(filter = state.financialFilter) {
+  const { start, end } = cashRange(filter);
+  const orders = (state.db.Ordenes_Trabajo || []).filter((order) => {
+    const date = cashDate(order.FechaIngreso);
+    return date && date >= start && date <= end;
+  });
+  return orders.reduce(
+    (summary, order) => {
+      const current = orderFinancialSummary(order.IDOrden);
+      summary.services += current.services;
+      summary.parts += current.parts;
+      summary.unclassified += current.unclassified;
+      summary.concepts += current.concepts;
+      summary.discounts += current.discount;
+      summary.net += current.total;
+      summary.paid += current.paid;
+      summary.due += current.due;
+      return summary;
+    },
+    { services: 0, parts: 0, unclassified: 0, concepts: 0, discounts: 0, net: 0, paid: 0, due: 0, orders: orders.length },
+  );
+}
+
 function dashboard() {
   const orders = state.db.Ordenes_Trabajo || [];
   const opened = orders.filter(
@@ -1390,6 +1463,8 @@ function dashboard() {
       filter: "clients",
     },
   ];
+  const financial = isAdmin() ? generalFinancialSummary() : null;
+  const filter = state.financialFilter;
   $("#content").innerHTML = `
     <div class="toolbar dashboard-header">
       <div><h2>Panel del taller</h2><p class="muted">Tocá un indicador para ver sus registros.</p></div>
@@ -1407,7 +1482,17 @@ function dashboard() {
       </button>`,
       )
       .join("")}</div>
+    ${financial ? `<section class="panel financial-overview"><div class="toolbar"><div><h2>Resumen financiero de órdenes</h2><p class="muted">Fecha de referencia: ingreso de la orden (FechaIngreso). Son valores de conceptos, no ganancias ni cobros distribuidos. El cobrado corresponde a estas órdenes, aunque el dinero haya ingresado en Caja fuera del período seleccionado.</p></div></div><div class="cash-filters financial-filters"><label>Período<select id="financialPeriod"><option value="today" ${filter.period === "today" ? "selected" : ""}>Hoy</option><option value="week" ${filter.period === "week" ? "selected" : ""}>Esta semana</option><option value="month" ${filter.period === "month" ? "selected" : ""}>Este mes</option><option value="custom" ${filter.period === "custom" ? "selected" : ""}>Rango personalizado</option></select></label><label class="financial-custom" ${filter.period === "custom" ? "" : "hidden"}>Desde<input id="financialStart" type="date" value="${esc(filter.start)}"></label><label class="financial-custom" ${filter.period === "custom" ? "" : "hidden"}>Hasta<input id="financialEnd" type="date" value="${esc(filter.end)}"></label></div><div class="financial-overview-grid"><article class="financial-service"><span>Servicios / mano de obra</span><b>${money(financial.services)}</b></article><article class="financial-part"><span>Repuestos</span><b>${money(financial.parts)}</b></article>${financial.unclassified ? `<article class="financial-unclassified"><span>Sin clasificar</span><b>${money(financial.unclassified)}</b></article>` : ""}<article><span>Total de conceptos</span><b>${money(financial.concepts)}</b></article><article><span>Descuentos</span><b>${money(financial.discounts)}</b></article><article class="financial-net"><span>Total neto de ${financial.orders} orden${financial.orders === 1 ? "" : "es"}</span><b>${money(financial.net)}</b></article><article class="financial-paid"><span>Total cobrado efectivo</span><b>${money(financial.paid)}</b></article><article class="financial-due"><span>Saldo pendiente</span><b>${money(financial.due)}</b></article></div></section>` : ""}
     `;
+  const updateFinancialFilter = () => {
+    state.financialFilter.period = $("#financialPeriod").value;
+    state.financialFilter.start = $("#financialStart")?.value || "";
+    state.financialFilter.end = $("#financialEnd")?.value || "";
+    dashboard();
+  };
+  $("#financialPeriod")?.addEventListener("change", updateFinancialFilter);
+  $("#financialStart")?.addEventListener("change", updateFinancialFilter);
+  $("#financialEnd")?.addEventListener("change", updateFinancialFilter);
   wire();
 }
 
@@ -1488,7 +1573,7 @@ function cashRecords(filter = state.cashFilter) {
     const client = bike ? clientsById.get(bike.IDCliente) : null;
     return { order, bike, client };
   };
-  const payments = (state.db.Pagos || []).map((payment) => ({
+  const payments = (state.db.Pagos || []).filter(activePayment).map((payment) => ({
     key: `payment:${payment.IDPago}`,
     source: "payment",
     ...payment,
@@ -1568,7 +1653,7 @@ function cashRecordCard(record) {
       detailLines.push(["Referencia", record.Referencia || record.Comprobante]);
   }
   const observation = record.Observaciones || record.Observacion || "";
-  return `<article class="cash-row ${isExpense ? "is-expense" : "is-income"}"><div class="cash-row-main"><div><span class="badge cash-badge ${record.source === "payment" ? "cash-payment" : ""}">${esc(record.source === "payment" ? "Cobro de orden" : record.Tipo)}</span><strong>${esc(title)}</strong></div><b class="${isExpense ? "negative" : "positive"}">${isExpense ? "−" : "+"}${money(record.Importe)}</b></div>${detailLines.length ? `<dl class="cash-row-info">${detailLines.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>` : ""}${observation ? `<p class="cash-row-note">${esc(observation)}</p>` : ""}<div class="cash-row-meta"><span>${esc(cashDateLabel(record.Fecha))}</span><span>${esc(record.Medio || "Sin medio")}</span></div>${order ? `<div class="cash-row-actions"><button class="ghost" type="button" data-cash-order="${esc(order.IDOrden)}">Ver orden</button></div>` : ""}</article>`;
+  return `<article class="cash-row ${isExpense ? "is-expense" : "is-income"}"><div class="cash-row-main"><div><span class="badge cash-badge ${record.source === "payment" ? "cash-payment" : ""}">${esc(record.source === "payment" ? "Cobro de orden" : record.Tipo)}</span><strong>${esc(title)}</strong></div><b class="${isExpense ? "negative" : "positive"}">${isExpense ? "−" : "+"}${money(record.Importe)}</b></div>${detailLines.length ? `<dl class="cash-row-info">${detailLines.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>` : ""}${observation ? `<p class="cash-row-note">${esc(observation)}</p>` : ""}<div class="cash-row-meta"><span>${esc(cashDateLabel(record.Fecha))}</span><span>${esc(record.Medio || "Sin medio")}</span></div>${order || record.source === "payment" ? `<div class="cash-row-actions">${order ? `<button class="ghost" type="button" data-cash-order="${esc(order.IDOrden)}">Ver orden</button>` : ""}${record.source === "payment" ? `<button class="ghost" type="button" data-cash-edit-payment="${esc(record.IDPago)}">Editar cobro</button><button class="danger-button" type="button" data-cash-cancel-payment="${esc(record.IDPago)}">Anular</button>` : ""}</div>` : ""}</article>`;
 }
 function cashDashboard() {
   const records = cashRecords(),
@@ -1593,6 +1678,12 @@ function cashDashboard() {
   });
   document.querySelectorAll("[data-cash-order]").forEach((button) => {
     button.onclick = () => orderDetail(button.dataset.cashOrder);
+  });
+  document.querySelectorAll("[data-cash-edit-payment]").forEach((button) => {
+    button.onclick = () => form("Pagos", button.dataset.cashEditPayment);
+  });
+  document.querySelectorAll("[data-cash-cancel-payment]").forEach((button) => {
+    button.onclick = () => cancelPaymentModal(button.dataset.cashCancelPayment);
   });
 }
 function cashAmount(value) {
@@ -1763,7 +1854,7 @@ function startIntake(draft = null) {
   renderIntake(false);
   if (state.intake.photoReselectRequired)
     toast(
-      "El borrador fue recuperado. Por seguridad, las fotografías deben seleccionarse nuevamente.",
+      "El borrador fue recuperado. Por seguridad, las fotos y videos deben seleccionarse nuevamente.",
     );
 }
 function intakeClient() {
@@ -1882,7 +1973,7 @@ function renderIntake(capture = true) {
     "Cliente",
     "Moto",
     "Recepción",
-    "Fotografías",
+    "Fotos y videos",
     "Presupuesto",
     "Anticipo",
     "Confirmación",
@@ -1905,7 +1996,7 @@ function renderIntake(capture = true) {
   } else if (i.step === 3) {
     body = `<div class="fields"><label>Fecha de ingreso<input data-intake-reception="FechaIngreso" type="date" value="${esc(i.reception.FechaIngreso)}" required></label><label>Kilometraje<input data-intake-reception="Kilometraje" type="number" min="0" value="${esc(i.reception.Kilometraje)}"></label><label>Estado<input value="Recibida" readonly></label><label>Fecha prometida<input data-intake-reception="FechaPrometida" type="date" value="${esc(i.reception.FechaPrometida)}"></label><label class="intake-wide">Problema informado<textarea data-intake-reception="Problema" required>${esc(i.reception.Problema)}</textarea></label><label class="intake-wide">Observaciones<textarea data-intake-reception="Observaciones">${esc(i.reception.Observaciones)}</textarea></label></div>`;
   } else if (i.step === 4) {
-    body = `<p class="muted">Las fotos se subirán sólo después de crear la orden. Los borradores no conservan archivos seleccionados.</p><div class="intake-photo-actions photo-source-actions"><label class="photo-source-button photo-source-camera"><span class="photo-source-icon" aria-hidden="true">📷</span><span><strong>Sacar foto</strong><small>Abre la cámara del dispositivo</small></span><input id="intakeCamera" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" multiple hidden></label><label class="photo-source-button photo-source-file"><span class="photo-source-icon" aria-hidden="true">🖼️</span><span><strong>Subir archivo</strong><small>Elegí una imagen existente</small></span><input id="intakeFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label></div><div id="intakePreviews" class="intake-previews"></div>`;
+    body = `<p class="muted">Las fotos y videos se subirán sólo después de crear la orden. Los borradores no conservan archivos seleccionados. Videos: máximo 8 MB.</p><div class="intake-photo-actions photo-source-actions"><label class="photo-source-button photo-source-camera"><span class="photo-source-icon" aria-hidden="true">📷</span><span><strong>Sacar foto</strong><small>Abre la cámara del dispositivo</small></span><input id="intakeCamera" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" multiple hidden></label><label class="photo-source-button photo-source-video"><span class="photo-source-icon" aria-hidden="true">🎥</span><span><strong>Grabar video</strong><small>Usa la cámara cuando el dispositivo lo permite</small></span><input id="intakeVideo" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" capture="environment" hidden></label><label class="photo-source-button photo-source-file"><span class="photo-source-icon" aria-hidden="true">🖼️</span><span><strong>Elegir archivos</strong><small>Fotos o videos existentes</small></span><input id="intakeFiles" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" multiple hidden></label></div><div id="intakePreviews" class="intake-previews"></div>`;
   } else if (i.step === 5) {
     const catalog = intakeCatalog();
     const conceptControl = catalog.length
@@ -1934,7 +2025,7 @@ function renderIntake(capture = true) {
       .join(" · ");
     const status = document.createElement("p");
     status.className = "muted intake-photo-status";
-    status.textContent = `Estado de fotografías: ${stateText}`;
+    status.textContent = `Estado de archivos: ${stateText}`;
     $(".intake-panel").append(status);
   }
   wireIntake();
@@ -1947,17 +2038,22 @@ function refreshIntakePreviews() {
   if (!(intake.files || []).length) {
     const empty = document.createElement("p");
     empty.className = "muted";
-    empty.textContent = "No se seleccionaron fotografías.";
+    empty.textContent = "No se seleccionaron fotos ni videos.";
     root.append(empty);
     return;
   }
   intake.files.forEach((item, index) => {
     const card = document.createElement("div");
-    const image = document.createElement("img");
+    const image = document.createElement(isVideoFile(item.file) ? "video" : "img");
     const status = document.createElement("small");
     const remove = document.createElement("button");
     image.src = item.url;
     image.alt = "Previsualización";
+    if (image.tagName === "VIDEO") {
+      image.muted = true;
+      image.preload = "metadata";
+      image.setAttribute("aria-label", "Previsualización de video");
+    }
     status.textContent =
       item.status === "uploading"
         ? "Subiendo…"
@@ -2108,13 +2204,18 @@ function wireIntake() {
   });
   const addFiles = (files) => {
     const selected = [...files];
-    const typeAccepted = selected.filter(isSupportedPhotoFile);
+    const typeAccepted = selected.filter(isSupportedMediaFile);
     const oversized = typeAccepted.filter(
-      (file) => file.size > MAX_INTAKE_PHOTO_BYTES,
+      (file) =>
+        file.size > (isVideoFile(file) ? MAX_VIDEO_BYTES : MAX_INTAKE_PHOTO_BYTES),
     );
     const available = Math.max(0, MAX_INTAKE_PHOTOS - i.files.length);
     const accepted = typeAccepted
-      .filter((file) => file.size <= MAX_INTAKE_PHOTO_BYTES)
+      .filter(
+        (file) =>
+          file.size <=
+          (isVideoFile(file) ? MAX_VIDEO_BYTES : MAX_INTAKE_PHOTO_BYTES),
+      )
       .slice(0, available);
     const rejected = selected.length - typeAccepted.length;
     i.photos = i.files.map((item) => ({
@@ -2122,17 +2223,22 @@ function wireIntake() {
       type: item.file.type,
       status: item.status || "selected",
     }));
-    if (rejected) toast("Solo se admiten fotografías JPG, PNG o WEBP.");
+    if (rejected)
+      toast("Solo se admiten fotos JPG, PNG o WEBP y videos MP4, WebM o MOV.");
     if (oversized.length)
       toast(
-        `Cada fotografía debe pesar como máximo ${Math.round(MAX_INTAKE_PHOTO_BYTES / 1024 / 1024)} MB antes de procesarse.`,
+        "Las fotos deben pesar hasta 12 MB antes de procesarse y los videos hasta 8 MB.",
       );
     if (
-      typeAccepted.filter((file) => file.size <= MAX_INTAKE_PHOTO_BYTES)
+      typeAccepted.filter(
+        (file) =>
+          file.size <=
+          (isVideoFile(file) ? MAX_VIDEO_BYTES : MAX_INTAKE_PHOTO_BYTES),
+      )
         .length > available
     )
       toast(
-        `Podés seleccionar hasta ${MAX_INTAKE_PHOTOS} fotografías por ingreso.`,
+        `Podés seleccionar hasta ${MAX_INTAKE_PHOTOS} archivos por ingreso.`,
       );
     accepted.forEach((file) =>
       i.files.push({
@@ -2154,6 +2260,9 @@ function wireIntake() {
     }
   };
   $("#intakeCamera")?.addEventListener("change", (event) =>
+    addFiles(event.target.files),
+  );
+  $("#intakeVideo")?.addEventListener("change", (event) =>
     addFiles(event.target.files),
   );
   $("#intakeFiles")?.addEventListener("change", (event) =>
@@ -2236,7 +2345,7 @@ function confirmUploadedPhoto(photo, orderId) {
     !photo.DriveFileId ||
     !photo.NombreArchivo
   )
-    throw Error("El servidor no confirmó el almacenamiento de la fotografía.");
+    throw Error("El servidor no confirmó el almacenamiento del archivo.");
   return photo;
 }
 async function uploadIntakePhotos(intake, orderId, setProgress) {
@@ -2249,16 +2358,16 @@ async function uploadIntakePhotos(intake, orderId, setProgress) {
     pending.map(async ({ file, index }) => {
       startedUploads += 1;
       setProgress(
-        `Subiendo fotografías (${startedUploads}/${pending.length})…`,
+        `Subiendo archivos (${startedUploads}/${pending.length})…`,
       );
       file.status = "uploading";
       try {
-        const base64 = await shrink(file.file);
+        const encoded = await encodeMediaFile(file.file);
         const saved = confirmUploadedPhoto(
           await api("uploadPhoto", {
             IDOrden: orderId,
             Tipo: "Ingreso",
-            base64,
+            ...encoded,
             uploadKey:
               file.uploadKey ||
               (file.uploadKey = uploadKey(`intake_${intake.id}_${index}`)),
@@ -3007,6 +3116,20 @@ function argentinaDate(value) {
         timeZone: "America/Argentina/Buenos_Aires",
       });
 }
+function paymentDateInputValue(value) {
+  const text = String(value || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Argentina/Buenos_Aires",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
 function normalizeWhatsApp(value, fallback = false) {
   const original = String(value || "").trim();
   if (!original) return "";
@@ -3304,6 +3427,48 @@ function motoCard(bike) {
   return `<article class="item moto-card"><div class="itemhead"><div><strong>${esc(title)}</strong><small>Cliente: ${esc(owner?.Nombre || "Sin cliente")} · ${historyCount} trabajos</small></div><div class="customer-actions"><button data-open-moto="${esc(bike.IDMoto)}">Ver historial</button>${active ? `<button data-quick-moto="${esc(bike.IDMoto)}">+ Trabajo</button>` : '<span class="muted">Moto dada de baja</span>'}<button class="ghost" data-edit="Motos:${esc(bike.IDMoto)}">Editar</button><button class="ghost" data-moto-active="${esc(bike.IDMoto)}" data-active="${active ? "false" : "true"}">${active ? "Dar de baja" : "Reactivar"}</button></div></div></article>`;
 }
 
+function correctionTimestamp(correction) {
+  const value = Date.parse(String(correction?.FechaCorreccion || ""));
+  return Number.isFinite(value) ? value : 0;
+}
+function comparePaymentCorrections(a, b) {
+  return (
+    correctionTimestamp(a) - correctionTimestamp(b) ||
+    String(a.IDCorreccion || "").localeCompare(String(b.IDCorreccion || ""), "es", { numeric: true }) ||
+    String(a.IDOperacion || "").localeCompare(String(b.IDOperacion || ""))
+  );
+}
+function correctionSnapshot(value) {
+  try {
+    const parsed = JSON.parse(String(value || "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : null;
+  } catch (_) {
+    return null;
+  }
+}
+function paymentCorrectionChanges(correction) {
+  const before = correctionSnapshot(correction.DatosAntes);
+  const after = correctionSnapshot(correction.DatosDespues);
+  if (!before || !after)
+    return '<p class="payment-history-unavailable">Datos anteriores o posteriores no disponibles.</p>';
+  const definitions = [
+    ["Importe", "Importe", (value) => money(Number(value) || 0), (a, b) => Number(a) === Number(b)],
+    ["Medio", "Medio", (value) => String(value || "Sin medio"), (a, b) => String(a || "") === String(b || "")],
+    ["Fecha", "Fecha", (value) => argentinaDate(value), (a, b) => String(a || "") === String(b || "")],
+    ["Observaciones", "Observaciones", (value) => String(value || "Sin observaciones"), (a, b) => String(a || "") === String(b || "")],
+  ];
+  const changes = definitions
+    .filter(([field, , , equal]) => !equal(before[field], after[field]))
+    .map(([field, label, format]) => `<div><dt>${esc(label)}</dt><dd><span>${esc(format(before[field]))}</span><i aria-hidden="true">→</i><strong>${esc(format(after[field]))}</strong></dd></div>`)
+    .join("");
+  if (changes) return `<dl class="payment-history-changes">${changes}</dl>`;
+  return correction.Accion === "ANULAR"
+    ? '<p class="payment-history-state">El cobro dejó de contabilizarse.</p>'
+    : '<p class="payment-history-state">La corrección no modificó valores visibles.</p>';
+}
+
 function paymentCard(payment) {
   const order = (state.db.Ordenes_Trabajo || []).find(
       (row) => row.IDOrden === payment.IDOrden,
@@ -3317,7 +3482,63 @@ function paymentCard(payment) {
     bikeName = bike
       ? [bike.Patente, bike.Marca, bike.Modelo].filter(Boolean).join(" · ")
       : "";
-  return `<article class="item payment-card"><div class="itemhead"><div><span class="badge payment-method">${esc(payment.Medio || "Sin medio")}</span><strong>${money(Number(payment.Importe) || 0)}</strong></div><button class="ghost" data-edit="Pagos:${esc(payment.IDPago)}">Editar</button></div><div class="payment-details"><span>Fecha <b>${esc(argentinaDate(payment.Fecha))}</b></span>${payment.IDOrden ? `<span>Orden <b>${esc(payment.IDOrden)}</b></span>` : ""}${client ? `<span>Cliente <b>${esc(client.Nombre)}</b></span>` : ""}${bikeName ? `<span>Moto <b>${esc(bikeName)}</b></span>` : ""}</div>${payment.Observaciones ? `<p class="payment-note">${esc(payment.Observaciones)}</p>` : ""}</article>`;
+  const annulled = !activePayment(payment);
+  const corrections = (state.db.Correcciones_Pagos || []).filter(
+    (row) => row.IDPago === payment.IDPago,
+  ).sort(comparePaymentCorrections);
+  const history = corrections.length
+    ? `<details class="payment-history"><summary>Historial de correcciones (${corrections.length})</summary>${corrections.map((correction) => `<div class="payment-history-event"><header><b>${esc(correction.Accion === "ANULAR" ? "ANULADO" : "EDITADO")}</b><span>${esc(cashDateLabel(correction.FechaCorreccion))} · Responsable: ${esc(correction.Responsable || "ADMIN")}</span></header>${paymentCorrectionChanges(correction)}${correction.Motivo ? `<small>Motivo: ${esc(correction.Motivo)}</small>` : ""}</div>`).join("")}</details>`
+    : "";
+  return `<article class="item payment-card ${annulled ? "payment-annulled" : "payment-active"}"><div class="itemhead"><div><span class="badge payment-method">${esc(payment.Medio || "Sin medio")}</span>${annulled ? '<span class="badge payment-annulled-badge">ANULADO</span>' : ""}<strong>${money(Number(payment.Importe) || 0)}</strong></div>${!annulled ? `<div class="payment-actions"><button class="ghost" data-edit="Pagos:${esc(payment.IDPago)}">Editar</button><button class="danger-button" type="button" data-cancel-payment="${esc(payment.IDPago)}">Anular</button></div>` : ""}</div><div class="payment-details"><span>Fecha <b>${esc(argentinaDate(payment.Fecha))}</b></span>${payment.IDOrden ? `<span>Orden <b>${esc(payment.IDOrden)}</b></span>` : ""}${client ? `<span>Cliente <b>${esc(client.Nombre)}</b></span>` : ""}${bikeName ? `<span>Moto <b>${esc(bikeName)}</b></span>` : ""}</div>${payment.Observaciones ? `<p class="payment-note">${esc(payment.Observaciones)}</p>` : ""}${annulled ? `<p class="payment-cancel-reason">Motivo de anulación: ${esc(payment.MotivoAnulacion || "No informado")}</p>` : ""}${history}</article>`;
+}
+
+function cancelPaymentModal(paymentId) {
+  if (!isAdmin()) return toast("Operación reservada para administración.");
+  const payment = (state.db.Pagos || []).find((row) => row.IDPago === paymentId);
+  if (!payment) return toast("No se encontró el cobro.");
+  if (!activePayment(payment)) return toast("Este cobro ya está anulado.");
+  const operationId = uploadKey("cancel_payment");
+  const overlay = document.createElement("div");
+  overlay.className = "app-modal-overlay";
+  const modal = document.createElement("section");
+  modal.className = "app-modal is-danger payment-cancel-modal";
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  modal.innerHTML = `<h2>¿Querés anular este cobro de ${money(Number(payment.Importe) || 0)}?</h2><p>Dejará de contabilizarse en la orden y en Caja. El registro original y esta anulación quedarán en el historial.</p><label>Motivo obligatorio<textarea id="paymentCancelReason" maxlength="500" required placeholder="Ej.: cobro duplicado o medio registrado incorrectamente"></textarea></label><p id="paymentCancelError" class="error" aria-live="polite"></p><div class="app-modal-actions"><button type="button" class="ghost" id="paymentCancelBack">Volver</button><button type="button" class="danger-button" id="paymentCancelConfirm">Anular cobro</button></div>`;
+  overlay.append(modal);
+  const close = () => {
+    overlay.remove();
+    if (!document.querySelector(".app-modal-overlay")) document.body.classList.remove("modal-open");
+  };
+  overlay.onclick = (event) => { if (event.target === overlay) close(); };
+  modal.querySelector("#paymentCancelBack").onclick = close;
+  modal.querySelector("#paymentCancelConfirm").onclick = async () => {
+    const reason = modal.querySelector("#paymentCancelReason").value.trim();
+    const error = modal.querySelector("#paymentCancelError");
+    if (!reason) { error.textContent = "Ingresá el motivo de la anulación."; return; }
+    const button = modal.querySelector("#paymentCancelConfirm");
+    button.disabled = true;
+    button.textContent = "Anulando…";
+    const activeOrder = state.activeOrderId;
+    try {
+      await api("cancelPayment", {
+        IDPago: paymentId,
+        Motivo: reason,
+        IDOperacion: operationId,
+      });
+      close();
+      toast("Cobro anulado. Caja y saldo fueron recalculados.");
+      await load();
+      if (activeOrder) orderDetail(activeOrder, false);
+    } catch (failure) {
+      error.textContent = failure.message || "No se pudo anular el cobro.";
+      button.disabled = false;
+      button.textContent = "Anular cobro";
+    }
+  };
+  document.body.append(overlay);
+  document.body.classList.add("modal-open");
+  modal.querySelector("#paymentCancelReason").focus();
 }
 function isDuplicatedPaymentHeader(row) {
   return (
@@ -4519,6 +4740,9 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
     openQuickIntake({ motoId: preset.IDMoto || "" });
     return;
   }
+  const paymentEdit = table === "Pagos" && Boolean(id);
+  const paymentOperationId = paymentEdit ? uploadKey("edit_payment") : "";
+  const paymentReturnOrder = paymentEdit ? state.activeOrderId : "";
   const isOrderEdit = Boolean(orderId && id && ["Clientes", "Motos", "Ordenes_Trabajo"].includes(table));
   if (remember) rememberScreen({ kind: "form", table, id, preset, orderId: isOrderEdit ? orderId : "" });
   const paymentOrderId =
@@ -4544,7 +4768,9 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
   }[table];
   const existing = (state.db[table] || []).find((row) => row[pk] === id) || {};
   const row = { ...existing, ...preset };
-  const formFields = !isAdmin() && table === "Detalle_Trabajo"
+  const formFields = paymentEdit
+    ? ["Importe", "Medio", "Fecha", "Observaciones"]
+    : !isAdmin() && table === "Detalle_Trabajo"
     ? (id ? ["Tipo", "Descripcion", "Cantidad"] : ["IDOrden", "Tipo", "Descripcion", "Cantidad"])
     : (isOrderEdit ? orderEditFields(table) : def.fields);
   const fields = formFields
@@ -4566,13 +4792,18 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
           Problema: "Problema informado",
           PrecioUnitario: "Precio unitario",
         }[field] || field;
+      const displayValue = field.startsWith("Fecha")
+        ? table === "Pagos"
+          ? paymentDateInputValue(value)
+          : String(value).slice(0, 10)
+        : value;
       const input = field === "Activo" && ["Servicios", "Repuestos"].includes(table)
         ? `<span class="active-toggle-control"><input type="hidden" name="Activo" value="false"><input id="activeToggle" class="active-toggle-input" type="checkbox" name="Activo" value="true" ${isCatalogActive(value) ? "checked" : ""} role="switch" aria-label="Activo"><span class="active-toggle-track" aria-hidden="true"></span><span class="active-toggle-text">${isCatalogActive(value) ? "Sí" : "No"}</span></span>`
         : opts.length
         ? `<select name="${field}" ${required} ${paymentContext && field === "IDOrden" ? "disabled" : ""}><option value="">Seleccionar…</option>${opts.map(([v, text]) => `<option value="${esc(v)}" ${String(value) === String(v) ? "selected" : ""}>${esc(text)}</option>`).join("")}</select>${paymentContext && field === "IDOrden" ? `<input type="hidden" name="IDOrden" value="${esc(value)}">` : ""}`
         : ["Observaciones", "Problema", "Diagnostico"].includes(field)
           ? `<textarea name="${field}" ${required}>${esc(value)}</textarea>`
-          : `<input name="${field}" value="${esc(field.startsWith("Fecha") ? String(value).slice(0, 10) : value)}" ${required} ${["Importe", "Cantidad", "PrecioUnitario", "PrecioSugerido", "Costo", "PrecioVenta", "Descuento", "Kilometraje", "Cilindrada", "Anio"].includes(field) ? `type="number" step="any" min="${table === "Pagos" && field === "Importe" ? "0.01" : "0"}"` : field.startsWith("Fecha") ? 'type="date"' : 'type="text"'}>`;
+          : `<input name="${field}" value="${esc(displayValue)}" ${required} ${["Importe", "Cantidad", "PrecioUnitario", "PrecioSugerido", "Costo", "PrecioVenta", "Descuento", "Kilometraje", "Cilindrada", "Anio"].includes(field) ? `type="number" step="any" min="${table === "Pagos" && field === "Importe" ? "0.01" : "0"}"` : field.startsWith("Fecha") ? 'type="date"' : 'type="text"'}>`;
       return `<label>${esc(label)}${input}</label>`;
     })
     .join("");
@@ -4588,7 +4819,7 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
     : "";
   const orderEditTitle = { Clientes: "Editar cliente", Motos: "Editar moto", Ordenes_Trabajo: "Editar trabajo" }[table];
   $("#content").innerHTML =
-    `<div class="toolbar"><div><h2>${isOrderEdit ? orderEditTitle : paymentContext ? "Registrar nuevo cobro" : `${id ? "Editar" : "Nuevo"} · ${def.title}`}</h2><p class="muted">${isOrderEdit ? "Los cambios se aplicarán a este registro y volverás a la misma orden." : paymentContext ? "El cobro quedará vinculado a esta orden." : clientNew ? "Registrá el cliente y seguí directamente con su moto." : bikeNew ? "La moto queda asociada al cliente y podés abrir el trabajo inmediatamente." : ""}</p></div><button class="ghost" id="back">← Volver</button></div>${paymentSummary}<form id="editForm" class="panel order-context-form"><div class="fields">${fields}</div><div class="form-save-actions"><button type="submit" data-next="default">${paymentContext ? "Guardar cobro" : `Guardar${id ? " cambios" : ""}`}</button>${extraButton}</div></form>`;
+    `<div class="toolbar"><div><h2>${paymentEdit ? "Editar cobro" : isOrderEdit ? orderEditTitle : paymentContext ? "Registrar nuevo cobro" : `${id ? "Editar" : "Nuevo"} · ${def.title}`}</h2><p class="muted">${paymentEdit ? `Se conserva el cobro ${esc(id)} y su orden asociada. La modificación quedará auditada.` : isOrderEdit ? "Los cambios se aplicarán a este registro y volverás a la misma orden." : paymentContext ? "El cobro quedará vinculado a esta orden." : clientNew ? "Registrá el cliente y seguí directamente con su moto." : bikeNew ? "La moto queda asociada al cliente y podés abrir el trabajo inmediatamente." : ""}</p></div><button class="ghost" id="back">← Volver</button></div>${paymentSummary}<form id="editForm" class="panel order-context-form"><div class="fields">${fields}${paymentEdit ? '<label class="payment-edit-reason">Motivo de la corrección (opcional)<textarea name="MotivoCorreccion" maxlength="500" placeholder="Ej.: el medio correcto era efectivo"></textarea></label>' : ""}</div><div class="form-save-actions"><button type="submit" data-next="default">${paymentContext ? "Guardar cobro" : `Guardar${id ? " cambios" : ""}`}</button>${extraButton}</div></form>`;
   $("#back").onclick = () => {
     if (isOrderEdit) return goBack({ kind: "order", id: orderId });
     goBack({ kind: "view", view: table });
@@ -4608,7 +4839,9 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
     if (formEl.dataset.saving === "true") return;
     const next = event.submitter?.dataset.next || "default";
     const record = Object.fromEntries(new FormData(formEl));
-    if (id) record[pk] = id;
+    const correctionReason = String(record.MotivoCorreccion || "").trim();
+    delete record.MotivoCorreccion;
+    if (id && !paymentEdit) record[pk] = id;
     if (["Servicios", "Repuestos"].includes(table))
       record.Activo = isCatalogActive(record.Activo);
     if (table === "Pagos") {
@@ -4616,6 +4849,15 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
       if (!Number.isFinite(amount) || amount <= 0)
         return toast("El importe debe ser mayor que cero.");
       record.Importe = amount;
+    }
+    if (paymentEdit) {
+      if (Number(record.Importe) === Number(existing.Importe)) delete record.Importe;
+      if (String(record.Medio || "") === String(existing.Medio || "")) delete record.Medio;
+      if (String(record.Fecha || "") === paymentDateInputValue(existing.Fecha)) delete record.Fecha;
+      if (String(record.Observaciones || "").trim() === String(existing.Observaciones || "").trim())
+        delete record.Observaciones;
+      if (!Object.keys(record).length)
+        return toast("No hay cambios para guardar en este cobro.");
     }
     if (table === "Clientes") {
       if (!id) record.Telefono = record.WhatsApp?.trim() || "";
@@ -4646,11 +4888,21 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
       button.textContent = "Guardando...";
     });
     try {
-      const saved = await api("save", { table, record });
+      const response = paymentEdit
+        ? await api("editPayment", {
+            IDPago: id,
+            record,
+            Motivo: correctionReason,
+            IDOperacion: paymentOperationId,
+          })
+        : await api("save", { table, record });
+      const saved = paymentEdit ? response?.payment : response;
       if (!saved?.[pk])
         throw Error("El servidor no confirmó el registro guardado.");
       updateDbRecord(table, saved, pk);
-      toast(paymentContext ? "Cobro registrado correctamente." : "Guardado correctamente.");
+      if (paymentEdit && response?.correction)
+        updateDbRecord("Correcciones_Pagos", response.correction, "IDCorreccion");
+      toast(paymentEdit ? "Cobro actualizado y corrección auditada." : paymentContext ? "Cobro registrado correctamente." : "Guardado correctamente.");
       if (clientNew && next === "moto") {
         await synchronizeAfterSave();
         state.view = "Motos";
@@ -4667,6 +4919,11 @@ function form(table, id = "", preset = {}, remember = true, orderId = "") {
           state.currentScreen = { kind: "order", id: orderId };
           await synchronizeAfterSave();
           orderDetail(orderId, false);
+          return;
+        }
+        if (paymentEdit) {
+          await load();
+          if (paymentReturnOrder) orderDetail(paymentReturnOrder, false);
           return;
         }
         if (paymentContext) {
@@ -4703,7 +4960,7 @@ function ensurePhotoGalleryStyles() {
   const style = document.createElement("style");
   style.id = "motomania-photo-gallery-styles";
   style.textContent =
-    ".photo-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin:14px 0}.photo-card{overflow:hidden;background:#14151a;border:1px solid #3b3d46;border-radius:11px;min-height:176px}.photo-thumb{display:block;width:100%;aspect-ratio:4/3;border:0;border-bottom:1px solid #3b3d46;background:#24262e;cursor:pointer;padding:0}.photo-thumb img{display:block;width:100%;height:100%;object-fit:cover}.photo-thumb:hover{filter:brightness(1.12);transform:none}.photo-caption{padding:9px 10px;color:#c7c8cd;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.photo-caption b{display:block;color:#fff;margin-bottom:3px}.photo-loading,.photo-error{display:grid;place-items:center;min-height:132px;padding:12px;text-align:center;color:#aeb0ba;font-size:12px}.photo-error{color:#ffafb3}.photo-empty{padding:22px;text-align:center;color:#aeb0ba;border:1px dashed #464852;border-radius:10px}.photo-modal{position:fixed;z-index:50;inset:0;padding:20px;background:#000d;display:grid;place-items:center}.photo-modal-box{position:relative;max-width:min(920px,100%);max-height:100%;padding:40px 0 0}.photo-modal img{display:block;max-width:100%;max-height:calc(100vh - 90px);border-radius:10px}.photo-modal-close{position:absolute;right:0;top:0;min-height:32px;padding:5px 10px}@media(max-width:540px){.photo-gallery{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.photo-modal{padding:12px}}";
+    ".photo-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin:14px 0}.photo-card{overflow:hidden;background:#14151a;border:1px solid #3b3d46;border-radius:11px;min-height:176px}.photo-thumb{display:block;width:100%;aspect-ratio:4/3;border:0;border-bottom:1px solid #3b3d46;background:#24262e;cursor:pointer;padding:0}.photo-thumb img{display:block;width:100%;height:100%;object-fit:cover}.photo-thumb:hover{filter:brightness(1.12);transform:none}.video-thumb{display:grid;place-items:center;align-content:center;gap:8px;background:linear-gradient(145deg,#202b3a,#101720);color:#fff}.video-play{display:grid;place-items:center;width:48px;height:48px;padding-left:3px;border-radius:50%;background:#b32034;font-size:22px}.photo-caption{padding:9px 10px;color:#c7c8cd;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.photo-caption b{display:block;color:#fff;margin-bottom:3px}.photo-loading,.photo-error{display:grid;place-items:center;min-height:132px;padding:12px;text-align:center;color:#aeb0ba;font-size:12px}.photo-error{color:#ffafb3}.photo-empty{padding:22px;text-align:center;color:#aeb0ba;border:1px dashed #464852;border-radius:10px}.photo-modal{position:fixed;z-index:50;inset:0;padding:20px;background:#000d;display:grid;place-items:center}.photo-modal-box{position:relative;max-width:min(920px,100%);max-height:100%;padding:40px 0 0}.photo-modal img,.photo-modal video{display:block;max-width:100%;max-height:calc(100vh - 90px);border-radius:10px;background:#000}.photo-modal-close{position:absolute;right:0;top:0;min-height:32px;padding:5px 10px}@media(max-width:540px){.photo-gallery{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.photo-modal{padding:12px}}";
   document.head.append(style);
 }
 function openPhotoModal(src, title) {
@@ -4734,6 +4991,45 @@ function openPhotoModal(src, title) {
   document.addEventListener("keydown", onKey);
   document.body.append(modal);
   close.focus();
+}
+function openMediaModal(src, title, video = false) {
+  if (!video) return openPhotoModal(src, title);
+  const modal = document.createElement("div");
+  const box = document.createElement("div");
+  const close = document.createElement("button");
+  const player = document.createElement("video");
+  modal.className = "photo-modal video-modal";
+  box.className = "photo-modal-box";
+  close.className = "photo-modal-close";
+  close.type = "button";
+  close.textContent = "Cerrar";
+  player.src = src;
+  player.controls = true;
+  player.autoplay = true;
+  player.playsInline = true;
+  player.setAttribute("aria-label", title || "Video del trabajo");
+  box.append(close, player);
+  modal.append(box);
+  const dismiss = () => {
+    player.pause();
+    player.removeAttribute("src");
+    player.load();
+    document.removeEventListener("keydown", onKey);
+    modal.remove();
+  };
+  const onKey = (event) => {
+    if (event.key === "Escape") dismiss();
+  };
+  close.onclick = dismiss;
+  modal.onclick = (event) => {
+    if (event.target === modal) dismiss();
+  };
+  document.addEventListener("keydown", onKey);
+  document.body.append(modal);
+  close.focus();
+}
+function isVideoRecord(photo) {
+  return /\.(mp4|webm|mov)$/i.test(String(photo?.NombreArchivo || ""));
 }
 function isCurrentGallery(request, orderId) {
   return (
@@ -4804,16 +5100,52 @@ async function loadPhotoThumbnail(photo, index, request, orderId, signal) {
 
   if (!card) return;
 
+  if (isVideoRecord(photo)) {
+    card.classList.add("video-card");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "photo-thumb video-thumb";
+    button.setAttribute("aria-label", `Reproducir ${photo.NombreArchivo || "video"}`);
+    button.innerHTML = '<span class="video-play" aria-hidden="true">▶</span><span>Video</span>';
+    const caption = document.createElement("div");
+    caption.className = "photo-caption";
+    const tipo = document.createElement("b");
+    tipo.textContent = photo.Tipo || "Video";
+    const nombre = document.createElement("span");
+    nombre.textContent = photo.NombreArchivo || "Sin nombre";
+    caption.append(tipo, nombre);
+    button.onclick = async () => {
+      if (button.disabled) return;
+      button.disabled = true;
+      button.querySelector("span:last-child").textContent = "Cargando…";
+      try {
+        const data = await getPhotoSource(photo.DriveFileId, signal);
+        const mimeType = String(data?.mimeType || "").toLowerCase();
+        const base64 = String(data?.base64 || "").replace(/\s/g, "");
+        if (!VIDEO_MIME_TYPES.includes(mimeType) || !base64)
+          throw new Error("El servidor no devolvió un video válido.");
+        openMediaModal(`data:${mimeType};base64,${base64}`, nombre.textContent, true);
+      } catch (error) {
+        if (error instanceof SessionExpiredError) showLogin(error.message);
+        else toast(`No se pudo abrir el video. ${error.message}`);
+      } finally {
+        if (button.isConnected) {
+          button.disabled = false;
+          button.querySelector("span:last-child").textContent = "Video";
+        }
+      }
+    };
+    card.replaceChildren(button, caption);
+    return;
+  }
+
   try {
     const data = await getPhotoSource(photo.DriveFileId, signal);
 
     const mimeType = String(data?.mimeType || "").toLowerCase();
     const base64 = String(data?.base64 || "").replace(/\s/g, "");
 
-    if (
-      !["image/jpeg", "image/png", "image/webp"].includes(mimeType) ||
-      !base64
-    ) {
+    if (!IMAGE_MIME_TYPES.includes(mimeType) || !base64) {
       throw new Error("El servidor no devolvió una imagen válida.");
     }
 
@@ -4898,7 +5230,10 @@ function photoQueueFor(orderId) {
 function addQueuedPhotos(orderId, files, type) {
   const queue = photoQueueFor(orderId);
   [...files].forEach((file) => {
-    if (!isSupportedPhotoFile(file)) return toast("Solo se admiten fotografías JPG, PNG o WEBP.");
+    if (!isSupportedMediaFile(file))
+      return toast("Solo se admiten fotos JPG, PNG o WEBP y videos MP4, WebM o MOV.");
+    if (isVideoFile(file) && file.size > MAX_VIDEO_BYTES)
+      return toast("El video supera el límite de 8 MB.");
     const duplicate = queue.some((item) => item.file.name === file.name && item.file.size === file.size && item.file.lastModified === file.lastModified);
     if (!duplicate) queue.push({ id: uploadKey("queued"), file, type, url: URL.createObjectURL(file), status: "pending", error: "" });
   });
@@ -4910,11 +5245,12 @@ function renderPhotoQueue(orderId) {
   if (!root || state.activeOrderId !== orderId) return;
   root.replaceChildren(...queue.map((item) => {
     const card = document.createElement("article"); card.className = `queued-photo is-${item.status}`;
-    const image = document.createElement("img"); image.src = item.url; image.alt = item.file.name;
+    const image = document.createElement(isVideoFile(item.file) ? "video" : "img"); image.src = item.url; image.alt = item.file.name;
+    if (image.tagName === "VIDEO") { image.muted = true; image.preload = "metadata"; image.setAttribute("aria-label", `Video: ${item.file.name}`); card.classList.add("is-video"); }
     const text = document.createElement("span"); text.textContent = item.status === "failed" ? `Falló: ${item.error}` : item.status === "uploading" ? "Subiendo…" : item.status === "saved" ? "Guardada" : "Pendiente";
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "ghost"; remove.textContent = "Quitar"; remove.disabled = item.status === "uploading" || item.status === "saved";
     remove.onclick = () => { const index = queue.indexOf(item); if (index >= 0) { URL.revokeObjectURL(item.url); queue.splice(index, 1); renderPhotoQueue(orderId); } };
-    image.onclick = () => openPhotoModal(item.url, item.file.name); card.append(image, text, remove); return card;
+    image.onclick = () => isVideoFile(item.file) ? openMediaModal(item.url, item.file.name, true) : openPhotoModal(item.url, item.file.name); card.append(image, text, remove); return card;
   }));
   const ready = queue.filter((item) => item.status === "pending" || item.status === "failed").length;
   const failed = queue.filter((item) => item.status === "failed").length;
@@ -4930,14 +5266,14 @@ async function uploadQueuedPhotos(orderId, failedOnly = false) {
     while (next < selected.length) {
       const item = selected[next++]; item.status = "uploading"; item.error = ""; renderPhotoQueue(orderId);
       try {
-        const saved = confirmUploadedPhoto(await api("uploadPhoto", { IDOrden: orderId, Tipo: item.type, base64: await shrink(item.file), uploadKey: item.id }), orderId);
+        const saved = confirmUploadedPhoto(await api("uploadPhoto", { IDOrden: orderId, Tipo: item.type, ...(await encodeMediaFile(item.file)), uploadKey: item.id }), orderId);
         updateDbRecord("Fotos", saved, "IDFoto"); item.status = "saved";
       } catch (error) { item.status = "failed"; item.error = error.message || "No se pudo subir"; if (error instanceof SessionExpiredError) showLogin(error.message); }
       renderPhotoQueue(orderId);
     }
   };
   await Promise.all(Array.from({ length: Math.min(PHOTO_UPLOAD_CONCURRENCY, selected.length) }, worker));
-  if (state.activeOrderId === orderId) { toast("Subida de fotografías finalizada."); orderDetail(orderId, false); }
+  if (state.activeOrderId === orderId) { toast("Subida de archivos finalizada."); orderDetail(orderId, false); }
 }
 
 function orderDetail(id, remember = true) {
@@ -4953,7 +5289,7 @@ function orderDetail(id, remember = true) {
   const d = state.db.Detalle_Trabajo.filter((x) => x.IDOrden === id),
     p = state.db.Pagos.filter((x) => x.IDOrden === id),
     photos = state.db.Fotos.filter((x) => x.IDOrden === id),
-    t = totals(id);
+    t = orderFinancialSummary(id);
   state.galleryAbortController?.abort();
   const galleryAbortController = new AbortController();
   state.galleryAbortController = galleryAbortController;
@@ -4972,7 +5308,7 @@ function orderDetail(id, remember = true) {
           data-photo-index="${index}"
         >
           <div class="photo-loading">
-            Cargando fotografía…
+            ${isVideoRecord(foto) ? "Preparando video…" : "Cargando fotografía…"}
           </div>
         </article>
       `,
@@ -4982,7 +5318,7 @@ function orderDetail(id, remember = true) {
   `
     : `
     <div id="photoGallery" class="photo-empty">
-      Esta orden todavía no tiene fotografías.
+      Esta orden todavía no tiene fotografías ni videos.
     </div>
   `;
 
@@ -5018,7 +5354,7 @@ function orderDetail(id, remember = true) {
         .map(
           (x) => `
         <div class="item concept-row">
-          <div><strong>${esc(x.Tipo)} · ${esc(x.Descripcion)}</strong><small>${adminMode ? `${esc(x.Cantidad)} × ${money(Number(x.PrecioUnitario))} = ${money(Number(x.Subtotal))}` : `Cantidad: ${esc(x.Cantidad)}`}</small></div>
+          <div><strong>${esc(["Servicio", "Repuesto"].includes(x.Tipo) ? x.Tipo : "Sin clasificar")} · ${esc(x.Descripcion)}</strong><small>${adminMode ? `${esc(x.Cantidad)} × ${money(Number(x.PrecioUnitario))} = ${money(Number(x.Subtotal))}` : `Cantidad: ${esc(x.Cantidad)}`}</small></div>
           <div class="concept-actions"><button class="ghost" type="button" data-edit-concept="${esc(x.IDDetalle)}">✏️ Editar</button>${adminMode ? `<button class="danger-button" type="button" data-delete-concept="${esc(x.IDDetalle)}">🗑️ Borrar</button>` : ""}</div>
         </div>
       `,
@@ -5059,6 +5395,8 @@ function orderDetail(id, remember = true) {
       </div>
     </form>
 
+    ${adminMode ? `<section class="panel order-financial-summary"><h2>Resumen financiero de la orden</h2><p class="muted">Valores históricos guardados en los conceptos. El cobrado se muestra únicamente como total real y no se distribuye entre categorías.</p><div class="order-financial-grid"><div class="financial-service"><span>Servicios / mano de obra</span><b>${money(t.services)}</b></div><div class="financial-part"><span>Repuestos</span><b>${money(t.parts)}</b></div>${t.unclassified ? `<div class="financial-unclassified"><span>Sin clasificar</span><b>${money(t.unclassified)}</b></div>` : ""}<div><span>Total de conceptos</span><b>${money(t.concepts)}</b></div><div><span>Descuento</span><b>${money(t.discount)}</b></div><div><span>Total de la orden</span><b>${money(t.total)}</b></div><div class="financial-paid"><span>Cobrado</span><b>${money(t.paid)}</b></div><div class="financial-due"><span>Saldo pendiente</span><b>${money(t.due)}</b></div></div></section>` : ""}
+
     ${adminMode ? `<h2>Pagos</h2>
 
     <div class="panel">
@@ -5070,13 +5408,7 @@ function orderDetail(id, remember = true) {
         Saldo: ${money(t.due)}
       </h2>
 
-      ${p
-        .map(
-          (x) => `
-        <p>${esc(x.Medio)} · ${money(Number(x.Importe))}</p>
-      `,
-        )
-        .join("")}
+      <div class="payment-order-list">${p.map(paymentCard).join("") || '<p class="muted">No hay cobros registrados.</p>'}</div>
 
       <button data-pay="${id}">+ Registrar cobro</button>
 
@@ -5121,7 +5453,7 @@ function orderDetail(id, remember = true) {
       }
     </div>` : ""}
 
-    <h2>Fotografías</h2>
+    <h2>Fotografías y videos</h2>
 
     <div class="panel">
       ${gallery}
@@ -5155,7 +5487,7 @@ function orderDetail(id, remember = true) {
       </form>
 
       <small>
-        Las fotos se almacenan de forma privada en Google Drive.
+        Las fotos y videos se almacenan de forma privada en Google Drive. Videos: máximo 8 MB.
       </small>
     </div>
 
@@ -5181,15 +5513,27 @@ function orderDetail(id, remember = true) {
   photoFile.type = "file";
   photoFile.name = "photoFile";
   photoFile.id = "orderPhotoFile";
-  photoFile.accept = "image/jpeg,image/png,image/webp";
+  photoFile.accept = "image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov";
   photoFile.hidden = true;
   const fileLabel = document.createElement("label");
   fileLabel.className = "photo-source-button photo-source-file";
   fileLabel.innerHTML =
-    '<span class="photo-source-icon" aria-hidden="true">🖼️</span><span><strong>Subir archivo</strong><small>Elegí una imagen existente</small></span>';
+    '<span class="photo-source-icon" aria-hidden="true">🖼️</span><span><strong>Elegir archivos</strong><small>Fotos o videos existentes</small></span>';
   fileLabel.append(photoFile);
+  const videoFile = document.createElement("input");
+  videoFile.type = "file";
+  videoFile.name = "videoFile";
+  videoFile.id = "orderVideoFile";
+  videoFile.accept = "video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov";
+  videoFile.setAttribute("capture", "environment");
+  videoFile.hidden = true;
+  const videoLabel = document.createElement("label");
+  videoLabel.className = "photo-source-button photo-source-video";
+  videoLabel.innerHTML =
+    '<span class="photo-source-icon" aria-hidden="true">🎥</span><span><strong>Grabar video</strong><small>Disponible según el dispositivo</small></span>';
+  videoLabel.append(videoFile);
   photoFields.classList.add("photo-upload-fields");
-  photoFields.append(fileLabel);
+  photoFields.append(videoLabel, fileLabel);
   const photoPreview = document.createElement("div");
   photoPreview.id = "orderPhotoPreview";
   photoPreview.className = "photo-upload-preview muted";
@@ -5201,10 +5545,14 @@ function orderDetail(id, remember = true) {
   const previewSelectedPhoto = (file, otherInput) => {
     if (!file) return;
     otherInput.value = "";
-    const image = document.createElement("img");
+    const image = document.createElement(isVideoFile(file) ? "video" : "img");
     const url = URL.createObjectURL(file);
     image.src = url;
     image.alt = "Previsualización de la fotografía seleccionada";
+    if (image.tagName === "VIDEO") {
+      image.muted = true;
+      image.preload = "metadata";
+    }
     image.onload = () => URL.revokeObjectURL(url);
     const description = document.createElement("span");
     description.textContent = file.name;
@@ -5216,6 +5564,9 @@ function orderDetail(id, remember = true) {
   );
   photoFile.addEventListener("change", () =>
     previewSelectedPhoto(photoFile.files[0], photoCamera),
+  );
+  videoFile.addEventListener("change", () =>
+    previewSelectedPhoto(videoFile.files[0], photoFile),
   );
   $("#back").onclick = () => goBack({ kind: "view", view: "Ordenes_Trabajo" });
   $("#print").onclick = () => printOrder(id);
@@ -5247,17 +5598,17 @@ function orderDetail(id, remember = true) {
   };
   photoForm.onsubmit = async (e) => {
     e.preventDefault();
-    const file = photoCamera.files[0] || photoFile.files[0];
+    const file = photoCamera.files[0] || photoFile.files[0] || videoFile.files[0];
     if (!file) {
       photoUploadStatus.classList.add("is-error");
-      photoUploadStatus.textContent = "Seleccioná una foto antes de subirla.";
+      photoUploadStatus.textContent = "Seleccioná una foto o video antes de subirlo.";
       return;
     }
-    if (!isSupportedPhotoFile(file)) {
+    if (!isSupportedMediaFile(file)) {
       photoUploadStatus.classList.add("is-error");
       photoUploadStatus.textContent =
-        "Solo se admiten fotografías JPG, PNG o WEBP.";
-      return toast("Solo se admiten fotografías JPG, PNG o WEBP.");
+        "Solo se admiten fotos JPG, PNG o WEBP y videos MP4, WebM o MOV.";
+      return toast("Solo se admiten fotos JPG, PNG o WEBP y videos MP4, WebM o MOV.");
     }
     const submit = e.target.querySelector(
       "button[type=submit], button:not([type])",
@@ -5265,20 +5616,20 @@ function orderDetail(id, remember = true) {
     if (submit?.disabled) return;
     if (submit) {
       submit.disabled = true;
-      submit.textContent = "Subiendo fotografía…";
+      submit.textContent = "Subiendo archivo…";
     }
     photoForm.querySelectorAll('input[type="file"]').forEach((input) => {
       input.disabled = true;
     });
     photoUploadStatus.classList.remove("is-error");
-    photoUploadStatus.textContent = "Procesando y subiendo fotografía…";
+    photoUploadStatus.textContent = "Procesando y subiendo archivo…";
     try {
-      const base64 = await shrink(file);
+      const encoded = await encodeMediaFile(file);
       const saved = confirmUploadedPhoto(
         await api("uploadPhoto", {
           IDOrden: id,
           Tipo: e.target.Tipo.value,
-          base64,
+          ...encoded,
           uploadKey:
             e.target.dataset.uploadKey ||
             (e.target.dataset.uploadKey = uploadKey(`order_${id}`)),
@@ -5291,15 +5642,15 @@ function orderDetail(id, remember = true) {
       if (existing < 0) state.db.Fotos.push(saved);
       else state.db.Fotos[existing] = saved;
       photoUploadStatus.classList.remove("is-error");
-      photoUploadStatus.textContent = "Fotografía guardada correctamente.";
-      toast("Fotografía guardada correctamente.");
+      photoUploadStatus.textContent = "Archivo guardado correctamente.";
+      toast("Archivo guardado correctamente.");
       orderDetail(id);
     } catch (error) {
       if (error instanceof SessionExpiredError) showLogin(error.message);
       else {
         photoUploadStatus.classList.add("is-error");
-        photoUploadStatus.textContent = `No se pudo guardar la fotografía. ${error.message}`;
-        toast(`No se pudo guardar la fotografía. ${error.message}`);
+        photoUploadStatus.textContent = `No se pudo guardar el archivo. ${error.message}`;
+        toast(`No se pudo guardar el archivo. ${error.message}`);
       }
     } finally {
       if (photoForm.isConnected) {
@@ -5322,6 +5673,10 @@ function orderDetail(id, remember = true) {
   photoFile.addEventListener("change", () => {
     addQueuedPhotos(id, photoFile.files, photoForm.Tipo.value);
     photoFile.value = "";
+  });
+  videoFile.addEventListener("change", () => {
+    addQueuedPhotos(id, videoFile.files, photoForm.Tipo.value);
+    videoFile.value = "";
   });
   photoForm.onsubmit = (event) => event.preventDefault();
   $("#uploadAllPhotos").onclick = () => void uploadQueuedPhotos(id);
@@ -5380,7 +5735,7 @@ function addOrderEnhancements(id) {
       : "<p>Sin registros.</p>";
   const printable = document.createElement("article");
   printable.className = "print-document";
-  printable.innerHTML = `<header><h1>MOTOMANÍA</h1><p>Comprobante de orden de trabajo</p></header><div class="print-grid"><p><b>Fecha:</b> ${esc(argentinaDate(new Date().toISOString()))}</p><p><b>Orden:</b> ${esc(order.IDOrden)}</p><p><b>Estado:</b> ${esc(orderStageLabel(order.Estado))}</p><p><b>Cliente:</b> ${esc(client?.Nombre || "Sin cliente")}</p><p><b>Moto:</b> ${esc([bike?.Marca, bike?.Modelo].filter(Boolean).join(" ") || "Sin moto")}</p><p><b>Patente:</b> ${esc(bike?.Patente || "Sin patente")}</p><p><b>Kilometraje:</b> ${esc(order.Kilometraje || "No informado")}</p></div><p><b>Problema informado:</b> ${esc(order.Problema || "No informado")}</p>${order.Observaciones ? `<p><b>Observaciones:</b> ${esc(order.Observaciones)}</p>` : ""}<h2>Servicios realizados</h2>${lineList(services)}<h2>Repuestos utilizados</h2>${lineList(parts)}<h2>Pagos registrados</h2>${payments.length ? `<ul>${payments.map((payment) => `<li>${esc(argentinaDate(payment.Fecha))} · ${esc(payment.Medio || "Sin medio")} · ${money(Number(payment.Importe) || 0)}</li>`).join("")}</ul>` : "<p>Sin pagos registrados.</p>"}<div class="print-totals"><p>Presupuesto total: <b>${money(summary.total)}</b></p><p>Total cobrado: <b>${money(summary.paid)}</b></p><p>Saldo pendiente: <b>${money(summary.due)}</b></p></div></article>`;
+  printable.innerHTML = `<header><h1>MOTOMANÍA</h1><p>Comprobante de orden de trabajo</p></header><div class="print-grid"><p><b>Fecha:</b> ${esc(argentinaDate(new Date().toISOString()))}</p><p><b>Orden:</b> ${esc(order.IDOrden)}</p><p><b>Estado:</b> ${esc(orderStageLabel(order.Estado))}</p><p><b>Cliente:</b> ${esc(client?.Nombre || "Sin cliente")}</p><p><b>Moto:</b> ${esc([bike?.Marca, bike?.Modelo].filter(Boolean).join(" ") || "Sin moto")}</p><p><b>Patente:</b> ${esc(bike?.Patente || "Sin patente")}</p><p><b>Kilometraje:</b> ${esc(order.Kilometraje || "No informado")}</p></div><p><b>Problema informado:</b> ${esc(order.Problema || "No informado")}</p>${order.Observaciones ? `<p><b>Observaciones:</b> ${esc(order.Observaciones)}</p>` : ""}<h2>Servicios realizados</h2>${lineList(services)}<h2>Repuestos utilizados</h2>${lineList(parts)}<h2>Pagos registrados</h2>${payments.length ? `<ul>${payments.map((payment) => `<li>${!activePayment(payment) ? "ANULADO · " : ""}${esc(argentinaDate(payment.Fecha))} · ${esc(payment.Medio || "Sin medio")} · ${money(Number(payment.Importe) || 0)}</li>`).join("")}</ul>` : "<p>Sin pagos registrados.</p>"}<div class="print-totals"><p>Presupuesto total: <b>${money(summary.total)}</b></p><p>Total cobrado: <b>${money(summary.paid)}</b></p><p>Saldo pendiente: <b>${money(summary.due)}</b></p></div></article>`;
   $("#content").append(printable);
 }
 function motoDetail(id, remember = true) {
@@ -5414,7 +5769,7 @@ function motoDetail(id, remember = true) {
           (row) => row.IDOrden === order.IDOrden,
         ).length;
         const summary = totals(order.IDOrden);
-        return `<article class="item history-card"><div class="itemhead"><div><strong>${esc(argentinaDate(order.FechaIngreso))} · ${esc(order.IDOrden)}</strong><small>${esc(order.Problema || "Sin motivo informado")}</small></div><span class="badge" data-state="${esc(order.Estado)}">${esc(orderStageLabel(order.Estado))}</span></div><p class="history-work">${esc(serviceText)}</p><div class="order-meta"><span>Kilometraje: ${esc(order.Kilometraje || "No informado")}</span><span>Importe: ${money(summary.total)}</span><span>${photoCount} fotografía${photoCount === 1 ? "" : "s"}</span></div><button data-open="${esc(order.IDOrden)}">Abrir orden</button></article>`;
+        return `<article class="item history-card"><div class="itemhead"><div><strong>${esc(argentinaDate(order.FechaIngreso))} · ${esc(order.IDOrden)}</strong><small>${esc(order.Problema || "Sin motivo informado")}</small></div><span class="badge" data-state="${esc(order.Estado)}">${esc(orderStageLabel(order.Estado))}</span></div><p class="history-work">${esc(serviceText)}</p><div class="order-meta"><span>Kilometraje: ${esc(order.Kilometraje || "No informado")}</span><span>Importe: ${money(summary.total)}</span><span>${photoCount} archivo${photoCount === 1 ? "" : "s"}</span></div><button data-open="${esc(order.IDOrden)}">Abrir orden</button></article>`;
       })
       .join("") ||
     '<div class="empty">Esta moto todavía no tiene órdenes registradas.</div>';
@@ -5426,10 +5781,68 @@ function motoDetail(id, remember = true) {
 function isSupportedPhotoFile(file) {
   const type = String(file?.type || "").toLowerCase();
   const name = String(file?.name || "").toLowerCase();
-  return (
-    ["image/jpeg", "image/png", "image/webp"].includes(type) ||
-    /\.(jpe?g|png|webp)$/.test(name)
+  const extension = (name.match(/\.([a-z0-9]+)$/) || [])[1] || "";
+  const mimeExtension = {
+    "image/jpeg": ["jpg", "jpeg"],
+    "image/png": ["png"],
+    "image/webp": ["webp"],
+  };
+  if (type && !IMAGE_MIME_TYPES.includes(type)) return false;
+  if (extension && !/^(jpe?g|png|webp)$/.test(extension)) return false;
+  return Boolean(
+    type
+      ? !extension || mimeExtension[type].includes(extension)
+      : extension,
   );
+}
+function isVideoFile(file) {
+  const type = String(file?.type || "").toLowerCase();
+  const name = String(file?.name || "").toLowerCase();
+  const extension = (name.match(/\.([a-z0-9]+)$/) || [])[1] || "";
+  const mimeExtension = {
+    "video/mp4": ["mp4"],
+    "video/webm": ["webm"],
+    "video/quicktime": ["mov"],
+  };
+  if (type && !VIDEO_MIME_TYPES.includes(type)) return false;
+  if (extension && !/^(mp4|webm|mov)$/.test(extension)) return false;
+  return Boolean(
+    type
+      ? !extension || mimeExtension[type].includes(extension)
+      : extension,
+  );
+}
+function isSupportedMediaFile(file) {
+  return isSupportedPhotoFile(file) || isVideoFile(file);
+}
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const comma = result.indexOf(",");
+      if (comma < 0) reject(new Error("No se pudo preparar el archivo."));
+      else resolve(result.slice(comma + 1));
+    };
+    reader.onerror = () => reject(new Error("No se pudo leer el archivo."));
+    reader.readAsDataURL(file);
+  });
+}
+async function encodeMediaFile(file) {
+  if (!isVideoFile(file)) {
+    return {
+      base64: await shrink(file),
+      mimeType: "image/jpeg",
+      originalName: String(file?.name || "foto.jpg").replace(/\.[^.]+$/, ".jpg"),
+    };
+  }
+  if (file.size > MAX_VIDEO_BYTES)
+    throw new Error("El video supera el límite de 8 MB.");
+  return {
+    base64: await fileToBase64(file),
+    mimeType: String(file.type || "").toLowerCase(),
+    originalName: String(file.name || "video"),
+  };
 }
 async function sourceImage(file) {
   if (typeof createImageBitmap === "function") {
@@ -5622,6 +6035,10 @@ function wire() {
         const [table, id] = b.dataset.edit.split(":");
         form(table, id);
       }),
+  );
+  document.querySelectorAll("[data-cancel-payment]").forEach(
+    (button) =>
+      (button.onclick = () => cancelPaymentModal(button.dataset.cancelPayment)),
   );
   document.querySelectorAll("[data-order-edit]").forEach((button) => {
     button.onclick = () => {
