@@ -1254,15 +1254,44 @@ function budgetWhatsApp(id) {
     "noopener",
   );
 }
-function printOrder(id) {
-  state.printOrderId = id;
-  document.body.classList.add("printing-order");
-  window.addEventListener(
-    "afterprint",
-    () => document.body.classList.remove("printing-order"),
-    { once: true },
-  );
-  window.print();
+async function printOrder(id) {
+  const button = document.getElementById("print");
+  if (button?.disabled) return;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Preparando ficha profesional…";
+  }
+  try {
+    await prepareOrderPrintPhotos(id);
+    buildOrderPrintDocument(id);
+    const images = [...document.querySelectorAll(".print-document img")];
+    await Promise.all(
+      images.map((image) =>
+        image.complete
+          ? Promise.resolve()
+          : new Promise((resolve) => {
+              image.addEventListener("load", resolve, { once: true });
+              image.addEventListener("error", resolve, { once: true });
+            }),
+      ),
+    );
+    state.printOrderId = id;
+    document.body.classList.add("printing-order");
+    window.addEventListener(
+      "afterprint",
+      () => document.body.classList.remove("printing-order"),
+      { once: true },
+    );
+    window.print();
+  } catch (error) {
+    document.body.classList.remove("printing-order");
+    toast(`No se pudo preparar la impresión. ${error.message}`);
+  } finally {
+    if (button?.isConnected) {
+      button.disabled = false;
+      button.textContent = "Imprimir ficha profesional / Guardar PDF";
+    }
+  }
 }
 
 function render() {
@@ -5530,7 +5559,7 @@ function orderDetail(id, remember = true) {
     </div>
 
     <button id="print" class="ghost">
-      Imprimir comprobante / Guardar PDF
+      Imprimir ficha profesional / Guardar PDF
     </button>
   `;
 
@@ -5780,6 +5809,172 @@ function addOrderEnhancements(id) {
   printable.innerHTML = `<header><h1>MOTOMANÍA</h1><p>Comprobante de orden de trabajo</p></header><div class="print-grid"><p><b>Fecha:</b> ${esc(argentinaDate(new Date().toISOString()))}</p><p><b>Orden:</b> ${esc(order.IDOrden)}</p><p><b>Estado:</b> ${esc(orderStageLabel(order.Estado))}</p><p><b>Cliente:</b> ${esc(client?.Nombre || "Sin cliente")}</p><p><b>Moto:</b> ${esc([bike?.Marca, bike?.Modelo].filter(Boolean).join(" ") || "Sin moto")}</p><p><b>Patente:</b> ${esc(bike?.Patente || "Sin patente")}</p><p><b>Kilometraje:</b> ${esc(order.Kilometraje || "No informado")}</p></div><p><b>Problema informado:</b> ${esc(order.Problema || "No informado")}</p>${order.Observaciones ? `<p><b>Observaciones:</b> ${esc(order.Observaciones)}</p>` : ""}<h2>Servicios realizados</h2>${lineList(services)}<h2>Repuestos utilizados</h2>${lineList(parts)}<h2>Pagos registrados</h2>${payments.length ? `<ul>${payments.map((payment) => `<li>${!activePayment(payment) ? "ANULADO · " : ""}${esc(argentinaDate(payment.Fecha))} · ${esc(payment.Medio || "Sin medio")} · ${money(Number(payment.Importe) || 0)}</li>`).join("")}</ul>` : "<p>Sin pagos registrados.</p>"}<div class="print-totals"><p>Presupuesto total: <b>${money(summary.total)}</b></p><p>Total cobrado: <b>${money(summary.paid)}</b></p><p>Saldo pendiente: <b>${money(summary.due)}</b></p></div></article>`;
   $("#content").append(printable);
 }
+const printMoney = (value) =>
+  new Intl.NumberFormat("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    maximumFractionDigits: 2,
+  }).format(Number(value) || 0);
+
+function printText(value, fallback = "No informado") {
+  const text = String(value ?? "").trim();
+  return esc(text || fallback).replace(/\r?\n/g, "<br>");
+}
+
+function printDate(value) {
+  return value ? esc(argentinaDate(value)) : "No informada";
+}
+
+function printHeader(title, subtitle, orderId) {
+  return `<header class="print-ad-header"><img class="print-ad-banner" src="logo-motomania-completo.jpeg" alt="Publicidad completa de MotoManía"><div class="print-report-bar"><div class="print-report-heading"><b>${esc(title)}</b><span>${esc(subtitle)}</span></div><strong>${esc(orderId)}</strong></div></header>`;
+}
+
+function printFooter(page) {
+  return `<footer class="print-report-footer"><span>Documento de servicio · No es comprobante fiscal</span><span>Página ${page} de 3</span></footer>`;
+}
+
+function printSection(number, title, content, className = "") {
+  return `<section class="print-report-section ${className}"><h2><span>${number}</span>${esc(title)}</h2>${content}</section>`;
+}
+
+function printLineTable(rows, emptyText) {
+  if (!rows.length)
+    return `<div class="print-report-block print-empty">${esc(emptyText)}</div>`;
+  const body = rows
+    .map((item) => {
+      const quantity = Number(item.Cantidad || 0);
+      const unit = Number(item.PrecioUnitario || 0);
+      const subtotal = Number(item.Subtotal) || quantity * unit;
+      return `<tr><td>${printText(item.Descripcion, "Concepto sin descripción")}</td><td class="num">${quantity.toLocaleString("es-AR", { maximumFractionDigits: 2 })}</td><td class="num">${printMoney(unit)}</td><td class="num"><b>${printMoney(subtotal)}</b></td></tr>`;
+    })
+    .join("");
+  return `<div class="print-report-block print-table-block"><table><thead><tr><th>Descripción</th><th class="num">Cant.</th><th class="num">Unitario</th><th class="num">Importe</th></tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+async function prepareOrderPrintPhotos(id) {
+  const photos = (state.db.Fotos || []).filter(
+    (photo) => photo.IDOrden === id && !isVideoRecord(photo),
+  );
+  const controller = new AbortController();
+  await Promise.allSettled(
+    photos.map(async (photo) => {
+      if (!photo.DriveFileId || state.photoSources.has(photo.DriveFileId)) return;
+      const data = await getPhotoSource(photo.DriveFileId, controller.signal);
+      const mimeType = String(data?.mimeType || "").toLowerCase();
+      const base64 = String(data?.base64 || "").replace(/\s/g, "");
+      if (IMAGE_MIME_TYPES.includes(mimeType) && base64)
+        rememberPhotoSource(photo.DriveFileId, { mimeType, base64 });
+    }),
+  );
+}
+
+function buildOrderPrintDocument(id) {
+  const { order, bike, client, items, payments, photos, totals: summary } =
+    orderContext(id);
+  if (!order) return;
+  document.querySelectorAll(".print-document").forEach((node) => node.remove());
+
+  const services = items.filter((item) => item.Tipo === "Servicio");
+  const parts = items.filter((item) => item.Tipo === "Repuesto");
+  const otherItems = items.filter(
+    (item) => !["Servicio", "Repuesto"].includes(item.Tipo),
+  );
+  const history = (state.db.Ordenes_Trabajo || [])
+    .filter(
+      (previous) =>
+        String(previous.IDMoto) === String(order.IDMoto) &&
+        String(previous.IDOrden) !== String(order.IDOrden),
+    )
+    .sort((a, b) =>
+      String(b.FechaIngreso || "").localeCompare(String(a.FechaIngreso || "")),
+    );
+  const historyRows = history.length
+    ? history
+        .map((previous) => {
+          const descriptions = (state.db.Detalle_Trabajo || [])
+            .filter((item) => item.IDOrden === previous.IDOrden)
+            .map((item) => item.Descripcion)
+            .filter(Boolean)
+            .join(" · ");
+          return `<tr><td>${printDate(previous.FechaIngreso)}</td><td><b>${printText(previous.IDOrden)}</b></td><td>${printText(descriptions, previous.Problema || "Sin servicios detallados")}</td><td class="num"><b>${printMoney(orderFinancialSummary(previous.IDOrden).total)}</b></td></tr>`;
+        })
+        .join("")
+    : `<tr><td colspan="4" class="print-empty">No hay servicios anteriores registrados para esta motocicleta.</td></tr>`;
+
+  const paymentRows = [...payments]
+    .sort((a, b) => String(a.Fecha || "").localeCompare(String(b.Fecha || "")))
+    .map((payment) => {
+      const active = activePayment(payment);
+      const note = payment.Observaciones
+        ? `<small>${printText(payment.Observaciones)}</small>`
+        : "";
+      return `<tr class="${active ? "" : "print-payment-annulled"}"><td>${printDate(payment.Fecha)}</td><td>${printText(payment.Medio, "Sin medio")}${note}</td><td>${active ? "Vigente" : "ANULADO"}</td><td class="num"><b>${printMoney(payment.Importe)}</b></td></tr>`;
+    })
+    .join("") || `<tr><td colspan="4" class="print-empty">No hay pagos registrados para esta orden.</td></tr>`;
+
+  const interventionItems = services.length ? services : items;
+  const intervention = interventionItems.length
+    ? `<div class="print-report-block"><ul class="print-intervention-list">${interventionItems.map((item) => `<li>${printText(item.Descripcion, "Concepto sin descripción")}</li>`).join("")}</ul></div>`
+    : `<div class="print-report-block print-empty">No hay intervenciones registradas.</div>`;
+  const imagePhotos = photos.filter((photo) => !isVideoRecord(photo));
+  const videoCount = photos.length - imagePhotos.length;
+  const photoCards = imagePhotos
+    .map((photo, index) => {
+      const source = state.photoSources.get(photo.DriveFileId);
+      if (!source) return "";
+      return `<figure><img src="data:${source.mimeType};base64,${source.base64}" alt="${esc(photo.NombreArchivo || `Fotografía ${index + 1}`)}"><figcaption><b>${printText(photo.Tipo, `Fotografía ${index + 1}`)}</b><span>${printText(photo.NombreArchivo, "Archivo sin nombre")}</span></figcaption></figure>`;
+    })
+    .filter(Boolean)
+    .join("");
+  const photoContent = photoCards
+    ? `<div class="print-photo-grid">${photoCards}</div>${videoCount ? `<p class="print-note">${videoCount} video${videoCount === 1 ? "" : "s"} asociado${videoCount === 1 ? "" : "s"}; el documento impreso incluye únicamente fotografías.</p>` : ""}`
+    : `<div class="print-report-block print-empty">No hay fotografías registradas para esta orden.${videoCount ? ` Hay ${videoCount} video${videoCount === 1 ? "" : "s"} asociado${videoCount === 1 ? "" : "s"}.` : ""}</div>`;
+
+  const motorcycle = [bike?.Marca, bike?.Modelo].filter(Boolean).join(" ");
+  const contact = client?.WhatsApp || client?.Telefono;
+  const emitted = argentinaDate(localToday());
+  const deliveryDate = order.FechaEntrega || order.FechaPrometida;
+  const statusClass = order.Estado === "Cancelada" ? "is-cancelled" : "";
+  const otherTable = otherItems.length
+    ? `${printSection("", "Otros conceptos registrados", printLineTable(otherItems, ""), "print-subsection")}`
+    : "";
+
+  const printable = document.createElement("article");
+  printable.className = "print-document";
+  printable.setAttribute("aria-label", `Ficha profesional de la orden ${order.IDOrden}`);
+  printable.innerHTML = `
+    <section class="print-sheet">
+      ${printHeader("ORDEN DE TRABAJO", "Ficha de servicio e historial del vehículo", order.IDOrden)}
+      <div class="print-meta"><span>Documento emitido: ${esc(emitted)}</span><span>Datos registrados en MotoManía</span></div>
+      <div class="print-status ${statusClass}"><div><b>ESTADO: ${printText(orderStageLabel(order.Estado)).toUpperCase()}</b><span>Ingreso: ${printDate(order.FechaIngreso)}${order.FechaEntrega ? ` · Entrega: ${printDate(order.FechaEntrega)}` : ""}</span></div><div><b>Saldo pendiente: ${printMoney(summary.due)}</b><span>${order.FechaPrometida ? `Fecha prometida: ${printDate(order.FechaPrometida)}` : "Sin fecha prometida"}</span></div></div>
+      ${printSection("01", "Datos del cliente y de la motocicleta", `<div class="print-report-block print-data-grid"><div><small>Cliente</small><b>${printText(client?.Nombre, "Cliente no identificado")}</b></div><div><small>Teléfono / WhatsApp</small><span>${printText(contact)}</span></div><div><small>Motocicleta</small><b>${printText(motorcycle, "Motocicleta no identificada")}</b></div><div><small>Dominio</small><b>${printText(bike?.Patente)}</b></div><div><small>Modelo / año</small><span>${printText(bike?.Anio)}</span></div><div><small>Kilometraje al ingresar</small><span>${order.Kilometraje !== "" && order.Kilometraje != null ? `${printText(order.Kilometraje)} km` : "No informado"}</span></div></div>`)}
+      ${printSection("02", "Motivo de ingreso y diagnóstico", `<div class="print-report-block print-narrative"><small>Lo informado al ingresar</small><p>${printText(order.Problema)}</p><small>Diagnóstico registrado</small><p>${printText(order.Diagnostico, "No hay diagnóstico registrado.")}</p></div>`)}
+      ${printSection("03", "Historial de servicios de esta motocicleta", `<p class="print-note">Órdenes anteriores vinculadas al mismo vehículo, de la más reciente a la más antigua.</p><div class="print-report-block print-table-block"><table><thead><tr><th>Fecha</th><th>Orden</th><th>Servicio registrado</th><th class="num">Importe</th></tr></thead><tbody>${historyRows}</tbody></table></div>`)}
+      ${printFooter(1)}
+    </section>
+    <section class="print-sheet">
+      ${printHeader("PRESUPUESTO", "Detalle económico de la orden de trabajo", order.IDOrden)}
+      <div class="print-meta"><span>Cliente: ${printText(client?.Nombre, "No identificado")}</span><span>${printText(motorcycle, "Motocicleta no identificada")} · Dominio: ${printText(bike?.Patente)}</span></div>
+      ${printSection("04", "Mano de obra y servicios", printLineTable(services, "No hay servicios registrados."))}
+      ${printSection("05", "Repuestos y materiales", printLineTable(parts, "No hay repuestos registrados."))}
+      ${otherTable}
+      ${printSection("06", "Resumen del presupuesto", `<div class="print-report-block print-summary"><div><span>Mano de obra y servicios</span><b>${printMoney(orderFinancialSummary(id).services)}</b></div><div><span>Repuestos y materiales</span><b>${printMoney(orderFinancialSummary(id).parts)}</b></div>${orderFinancialSummary(id).unclassified ? `<div><span>Otros conceptos</span><b>${printMoney(orderFinancialSummary(id).unclassified)}</b></div>` : ""}<div><span>Subtotal de trabajos</span><b>${printMoney(orderFinancialSummary(id).concepts)}</b></div><div class="discount"><span>Descuento aplicado</span><b>− ${printMoney(orderFinancialSummary(id).discount)}</b></div><div class="print-grand-total"><span>TOTAL DEL TRABAJO</span><b>${printMoney(summary.total)}</b></div></div>`)}
+      ${printSection("07", "Pagos registrados y saldo", `<div class="print-report-block print-table-block"><table><thead><tr><th>Fecha</th><th>Medio de pago</th><th>Estado</th><th class="num">Importe</th></tr></thead><tbody>${paymentRows}</tbody><tfoot><tr><td colspan="3">Total abonado vigente</td><td class="num">${printMoney(summary.paid)}</td></tr><tr><td colspan="3">Saldo pendiente</td><td class="num due">${printMoney(summary.due)}</td></tr></tfoot></table></div><p class="print-note">Los pagos anulados se muestran para trazabilidad, pero no integran el total abonado.</p>`)}
+      ${printFooter(2)}
+    </section>
+    <section class="print-sheet">
+      ${printHeader("INFORME TÉCNICO", "Intervención registrada y entrega del vehículo", order.IDOrden)}
+      <div class="print-meta"><span>Cliente: ${printText(client?.Nombre, "No identificado")}</span><span>${printText(motorcycle, "Motocicleta no identificada")}${order.FechaEntrega ? ` · Finalización: ${printDate(order.FechaEntrega)}` : ""}</span></div>
+      ${printSection("08", "Detalle de la intervención", intervention)}
+      ${printSection("09", "Registro visual del trabajo", photoContent, "print-photo-section")}
+      ${printSection("10", "Observaciones y recomendaciones registradas", `<div class="print-report-block print-narrative"><p>${printText(order.Observaciones, "No hay observaciones ni recomendaciones registradas para esta orden.")}</p></div>`)}
+      ${printSection("11", "Constancia de entrega", `<div class="print-report-block"><div class="print-delivery-grid"><div><small>Fecha de entrega / prevista</small><b>${deliveryDate ? printDate(deliveryDate) : "No informada"}</b></div><div><small>Estado del trabajo</small><b>${printText(orderStageLabel(order.Estado))}</b></div><div><small>Total presupuestado</small><b>${printMoney(summary.total)}</b></div><div><small>Saldo al emitir este informe</small><b class="due">${printMoney(summary.due)}</b></div></div><div class="print-signatures"><div><span></span><small>Firma del responsable del taller</small></div><div><span></span><small>Conformidad del cliente</small></div></div></div>`)}
+      <div class="print-legal"><b>IMPORTANTE</b><span>Este documento refleja únicamente la información registrada en MotoManía al momento de su emisión.</span></div>
+      ${printFooter(3)}
+    </section>`;
+  $("#content").append(printable);
+}
+
 function motoDetail(id, remember = true) {
   const bike = (state.db.Motos || []).find((row) => row.IDMoto === id);
   if (!bike) return;
