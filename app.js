@@ -27,6 +27,9 @@ const state = {
   cashFilter: { period: "month", start: "", end: "" },
   financialFilter: { period: "month", start: "", end: "" },
   orderFilter: "",
+  independentBudgetQuery: "",
+  independentBudgetDraft: null,
+  independentBudgetSaving: false,
   quick: null,
   photoQueues: new Map(),
   photoUploadOrders: new Set(),
@@ -410,7 +413,11 @@ async function api(action, extra = {}, options = {}) {
     `[MOTOMANÍA] ${action}: ${(performance.now() - started).toFixed(0)} ms`,
   );
   if (!res.ok || !data || !data.ok) {
-    const message = data?.error || `Error de servidor (${res.status})`;
+    const serverMessage = data?.error || `Error de servidor (${res.status})`;
+    const message =
+      serverMessage === "Acción inválida" && /independentBudget/i.test(action)
+        ? "Acción inválida: el Apps Script desplegado no contiene todavía la versión actual del módulo de Presupuestos independientes. Actualizá Code.gs, ejecutá la inicialización de la hoja y creá una nueva versión de la implementación web."
+        : serverMessage;
     if (
       action !== "login" &&
       (res.status === 401 || res.status === 403 || isSessionError(message))
@@ -436,6 +443,7 @@ async function load() {
     "Fotos",
     "Servicios",
     "Repuestos",
+    "Presupuestos_Independientes",
   ];
   state.loading = true;
   state.tableStatus = Object.fromEntries(
@@ -468,6 +476,9 @@ async function load() {
       Fotos: Array.isArray(db?.Fotos) ? db.Fotos : [],
       Servicios: Array.isArray(db?.Servicios) ? db.Servicios : [],
       Repuestos: Array.isArray(db?.Repuestos) ? db.Repuestos : [],
+      Presupuestos_Independientes: Array.isArray(db?.Presupuestos_Independientes)
+        ? db.Presupuestos_Independientes
+        : [],
     };
     state.tableStatus = Object.fromEntries(
       tables.map((table) => [
@@ -509,6 +520,7 @@ async function ensureTablesLoaded(tables, options = {}) {
     "Fotos",
     "Servicios",
     "Repuestos",
+    "Presupuestos_Independientes",
   ];
   if (!Array.isArray(tables))
     throw Error("Las tablas solicitadas deben indicarse en un arreglo.");
@@ -1333,6 +1345,10 @@ function render() {
   // Servicios: nueva tabla compacta
   if (state.view === "Servicios") {
     return servicesView();
+  }
+
+  if (state.view === "Presupuestos_Independientes") {
+    return renderIndependentBudgets();
   }
 
   // Clientes, Motos, Trabajos, Repuestos y demás
@@ -6407,6 +6423,596 @@ async function deliverOrder(id, fechaEntrega) {
 
     toast("Entrega registrada correctamente.");
   });
+}
+
+// ================================================================
+// PRESUPUESTOS INDEPENDIENTES
+// Interfaz y documento de impresión completamente separados de las órdenes.
+// ================================================================
+
+function budgetOperationId(prefix = "budget") {
+  return `${prefix}_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+}
+
+function parseBudgetDetail(value) {
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value || "[]"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function budgetMoney(value) {
+  return new Intl.NumberFormat("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(value) || 0);
+}
+
+function budgetLineCents(line) {
+  const quantity = Number(line?.Cantidad);
+  const unitCents = Math.round(Number(line?.PrecioUnitario) * 100);
+  return Number.isFinite(quantity) && quantity > 0 && Number.isSafeInteger(unitCents) && unitCents >= 0
+    ? Math.round(quantity * unitCents)
+    : 0;
+}
+
+function budgetTotalCents(detail) {
+  return detail.reduce((sum, line) => sum + budgetLineCents(line), 0);
+}
+
+function independentBudgetStatus(record) {
+  if (String(record?.Estado) === "Anulado") return "Anulado";
+  const match = String(record?.Fecha || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "Vigente";
+  const expires = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + 15));
+  const now = new Date();
+  const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+  return today > expires ? "Vencido" : "Vigente";
+}
+
+function budgetSearchText(record) {
+  return normalizeSearch([
+    record.NumeroPresupuesto,
+    record.Cliente,
+    record.Moto,
+    record.Dominio,
+  ].join(" "));
+}
+
+function renderIndependentBudgets() {
+  state.independentBudgetDraft = null;
+  const records = [...(state.db.Presupuestos_Independientes || [])].sort((a, b) =>
+    String(b.NumeroPresupuesto || "").localeCompare(String(a.NumeroPresupuesto || "")),
+  );
+  $("#content").innerHTML = `
+    <div class="toolbar budget-toolbar">
+      <div><h2>Presupuestos independientes</h2><p class="muted">Cotizaciones ocasionales, sin vínculo con órdenes, stock ni caja.</p></div>
+      <button type="button" id="newIndependentBudget">+ Nuevo presupuesto</button>
+    </div>
+    <div class="budget-search-panel panel">
+      <input id="independentBudgetSearch" type="search" value="${esc(state.independentBudgetQuery)}" placeholder="Buscar cliente, motocicleta, dominio o número…" autocomplete="off">
+    </div>
+    <div class="budget-table-wrap"><table class="budget-table">
+      <thead><tr><th>Fecha</th><th>Número</th><th>Cliente</th><th>Motocicleta</th><th>Total</th><th>Estado</th><th>Acciones</th></tr></thead>
+      <tbody id="independentBudgetRows"></tbody>
+    </table></div>
+    <div id="independentBudgetEmpty" class="empty" hidden>No se encontraron presupuestos.</div>`;
+  const display = () => {
+    const terms = state.independentBudgetQuery.trim().split(/\s+/).filter(Boolean).map(normalizeSearch);
+    const filtered = records.filter((record) => terms.every((term) => budgetSearchText(record).includes(term)));
+    $("#independentBudgetRows").innerHTML = filtered.map((record) => {
+      const status = independentBudgetStatus(record);
+      const annulled = status === "Anulado";
+      return `<tr class="${annulled ? "is-annulled" : ""}">
+        <td data-label="Fecha">${esc(argentinaDate(record.Fecha))}</td>
+        <td data-label="Número"><strong>${esc(record.NumeroPresupuesto)}</strong></td>
+        <td data-label="Cliente">${esc(record.Cliente)}</td>
+        <td data-label="Motocicleta">${esc(record.Moto || "—")}${record.Dominio ? `<small>${esc(record.Dominio)}</small>` : ""}</td>
+        <td data-label="Total" class="budget-amount">${budgetMoney(record.Total)}</td>
+        <td data-label="Estado"><span class="budget-status" data-budget-status="${status.toLowerCase()}">${status}</span></td>
+        <td data-label="Acciones"><div class="budget-row-actions">
+          <button type="button" data-budget-view="${esc(record.IDPresupuesto)}">Ver</button>
+          ${annulled ? "" : `<button type="button" class="ghost" data-budget-edit="${esc(record.IDPresupuesto)}">Editar</button>`}
+          <button type="button" class="ghost" data-budget-duplicate="${esc(record.IDPresupuesto)}">Duplicar</button>
+          <button type="button" class="ghost" data-budget-print="${esc(record.IDPresupuesto)}">Imprimir / PDF</button>
+          <button type="button" class="budget-whatsapp-button" data-budget-whatsapp="${esc(record.IDPresupuesto)}">${whatsappIcon}<span>Enviar por WhatsApp</span></button>
+          ${annulled ? "" : `<button type="button" class="danger-button" data-budget-cancel="${esc(record.IDPresupuesto)}">Anular</button>`}
+        </div></td>
+      </tr>`;
+    }).join("");
+    $("#independentBudgetEmpty").hidden = filtered.length > 0;
+    wireIndependentBudgetActions();
+  };
+  $("#newIndependentBudget").onclick = () => openIndependentBudgetForm();
+  $("#independentBudgetSearch").oninput = (event) => {
+    state.independentBudgetQuery = event.target.value;
+    display();
+  };
+  display();
+}
+
+function emptyIndependentBudget() {
+  return {
+    Fecha: localToday(), Cliente: "", Telefono: "", Localidad: "", Moto: "",
+    Dominio: "", Motor: "", Cuadro: "", Color: "",
+    Detalle: [{ Cantidad: 1, Descripcion: "", PrecioUnitario: 0 }],
+  };
+}
+
+async function fetchIndependentBudget(id) {
+  const latest = await api("getIndependentBudget", { IDPresupuesto: id });
+  updateDbRecord("Presupuestos_Independientes", latest, "IDPresupuesto");
+  return latest;
+}
+
+async function openIndependentBudgetForm(id = "") {
+  await withSession(async () => {
+    const source = id ? await fetchIndependentBudget(id) : emptyIndependentBudget();
+    if (id && String(source.Estado) === "Anulado") return toast("Un presupuesto anulado no puede editarse.");
+    state.independentBudgetDraft = {
+      ...source,
+      Detalle: parseBudgetDetail(source.Detalle).map((line) => ({ ...line })),
+    };
+    renderIndependentBudgetForm(Boolean(id));
+  });
+}
+
+function captureIndependentBudgetForm() {
+  const draft = state.independentBudgetDraft;
+  if (!draft) return;
+  document.querySelectorAll("[data-budget-field]").forEach((input) => {
+    draft[input.dataset.budgetField] = input.value;
+  });
+  document.querySelectorAll("[data-budget-line]").forEach((input) => {
+    const index = Number(input.dataset.budgetLine);
+    const field = input.dataset.budgetLineField;
+    if (!draft.Detalle[index]) return;
+    draft.Detalle[index][field] = field === "Descripcion" ? input.value : Number(input.value);
+  });
+}
+
+function renderIndependentBudgetForm(editing = false) {
+  const draft = state.independentBudgetDraft;
+  if (!draft) return renderIndependentBudgets();
+  const total = budgetTotalCents(draft.Detalle) / 100;
+  $("#content").innerHTML = `
+    <div class="toolbar"><div><p class="eyebrow">Presupuesto independiente</p><h2>${editing ? `Editar Nº ${esc(draft.NumeroPresupuesto)}` : "Nuevo presupuesto"}</h2></div><button class="ghost" type="button" id="budgetFormBack">Volver</button></div>
+    <form id="independentBudgetForm" class="budget-form" novalidate>
+      <section class="panel budget-general-grid">
+        <label>Número<input value="${editing ? esc(draft.NumeroPresupuesto) : "Se asigna al guardar"}" disabled></label>
+        <label>Fecha de emisión<input data-budget-field="Fecha" type="date" value="${esc(draft.Fecha)}" required></label>
+      </section>
+      <section class="panel"><h3>Datos del cliente</h3><div class="budget-fields three">
+        <label>Nombre y apellido o razón social<input data-budget-field="Cliente" value="${esc(draft.Cliente)}" maxlength="200" required></label>
+        <label>Teléfono<input data-budget-field="Telefono" value="${esc(draft.Telefono)}" maxlength="80" inputmode="tel"></label>
+        <label>Localidad<input data-budget-field="Localidad" value="${esc(draft.Localidad)}" maxlength="120"></label>
+      </div></section>
+      <section class="panel"><h3>Datos de la motocicleta</h3><div class="budget-fields">
+        <label>Motocicleta<input data-budget-field="Moto" value="${esc(draft.Moto)}" maxlength="200" placeholder="Marca y modelo"></label>
+        <label>Dominio<input data-budget-field="Dominio" value="${esc(draft.Dominio)}" maxlength="40"></label>
+        <label>Número de motor<input data-budget-field="Motor" value="${esc(draft.Motor)}" maxlength="100"></label>
+        <label>Número de cuadro<input data-budget-field="Cuadro" value="${esc(draft.Cuadro)}" maxlength="100"></label>
+        <label>Color<input data-budget-field="Color" value="${esc(draft.Color)}" maxlength="80"></label>
+      </div></section>
+      <section class="panel budget-detail-panel"><div class="toolbar"><div><h3>Detalle</h3><p class="muted">Descripción libre para repuestos, materiales y mano de obra.</p></div><button class="ghost" type="button" id="addBudgetLine">+ Agregar concepto</button></div>
+        <div class="budget-lines"><div class="budget-line budget-line-head"><span>Cantidad</span><span>Descripción</span><span>Precio unitario</span><span>Importe</span><span></span></div>
+        ${draft.Detalle.map((line, index) => `<div class="budget-line">
+          <label><span>Cantidad</span><input data-budget-line="${index}" data-budget-line-field="Cantidad" type="number" min="0.0001" step="any" value="${esc(line.Cantidad)}" required></label>
+          <label><span>Descripción</span><input data-budget-line="${index}" data-budget-line-field="Descripcion" value="${esc(line.Descripcion)}" maxlength="500" required></label>
+          <label><span>Precio unitario</span><input data-budget-line="${index}" data-budget-line-field="PrecioUnitario" type="number" min="0" step="0.01" value="${esc(line.PrecioUnitario)}" required></label>
+          <output>${budgetMoney(budgetLineCents(line) / 100)}</output>
+          <button class="danger-button budget-remove-line" type="button" data-budget-remove-line="${index}" aria-label="Eliminar concepto">×</button>
+        </div>`).join("")}</div>
+        <div class="budget-live-total"><span>TOTAL</span><strong>${budgetMoney(total)}</strong></div>
+      </section>
+      <div class="form-save-actions budget-save-actions"><button class="ghost" type="button" id="budgetFormCancel">Cancelar</button><button type="submit" id="budgetSave">${editing ? "Guardar cambios" : "Guardar presupuesto"}</button></div>
+    </form>`;
+  const rerender = () => { captureIndependentBudgetForm(); renderIndependentBudgetForm(editing); };
+  $("#budgetFormBack").onclick = renderIndependentBudgets;
+  $("#budgetFormCancel").onclick = renderIndependentBudgets;
+  $("#addBudgetLine").onclick = () => {
+    captureIndependentBudgetForm();
+    draft.Detalle.push({ Cantidad: 1, Descripcion: "", PrecioUnitario: 0 });
+    renderIndependentBudgetForm(editing);
+  };
+  document.querySelectorAll("[data-budget-remove-line]").forEach((button) => {
+    button.onclick = () => {
+      captureIndependentBudgetForm();
+      draft.Detalle.splice(Number(button.dataset.budgetRemoveLine), 1);
+      if (!draft.Detalle.length) draft.Detalle.push({ Cantidad: 1, Descripcion: "", PrecioUnitario: 0 });
+      renderIndependentBudgetForm(editing);
+    };
+  });
+  document.querySelectorAll("[data-budget-line]").forEach((input) => {
+    input.oninput = () => {
+      captureIndependentBudgetForm();
+      const line = input.closest(".budget-line");
+      line.querySelector("output").textContent = budgetMoney(budgetLineCents(draft.Detalle[Number(input.dataset.budgetLine)]) / 100);
+      $(".budget-live-total strong").textContent = budgetMoney(budgetTotalCents(draft.Detalle) / 100);
+    };
+  });
+  $("#independentBudgetForm").onsubmit = (event) => saveIndependentBudget(event, editing);
+}
+
+function validateIndependentBudgetDraft(draft) {
+  if (!String(draft.Cliente || "").trim()) throw Error("Ingresá el nombre del cliente.");
+  if (!draft.Detalle.length) throw Error("Agregá al menos un concepto.");
+  draft.Detalle.forEach((line, index) => {
+    if (!String(line.Descripcion || "").trim()) throw Error(`Completá la descripción del concepto ${index + 1}.`);
+    if (!Number.isFinite(Number(line.Cantidad)) || Number(line.Cantidad) <= 0) throw Error(`La cantidad del concepto ${index + 1} debe ser positiva.`);
+    if (!Number.isFinite(Number(line.PrecioUnitario)) || Number(line.PrecioUnitario) < 0) throw Error(`El precio del concepto ${index + 1} no puede ser negativo.`);
+  });
+}
+
+async function saveIndependentBudget(event, editing) {
+  event.preventDefault();
+  if (state.independentBudgetSaving) return;
+  captureIndependentBudgetForm();
+  const draft = state.independentBudgetDraft;
+  try { validateIndependentBudgetDraft(draft); }
+  catch (error) { return toast(error.message); }
+  state.independentBudgetSaving = true;
+  const button = $("#budgetSave");
+  if (button) { button.disabled = true; button.textContent = "Guardando…"; }
+  await withSession(async () => {
+    try {
+      const capabilities = await api("independentBudgetCapabilities");
+      if (!capabilities?.sheetReady || !capabilities?.canWrite)
+        throw Error("El servidor no confirmó que la hoja de presupuestos esté preparada para escritura.");
+      const action = editing ? "updateIndependentBudget" : "createIndependentBudget";
+      draft._saveOperationId ||= budgetOperationId(editing ? "update_budget" : "create_budget");
+      const result = await api(action, {
+        IDPresupuesto: editing ? draft.IDPresupuesto : undefined,
+        operationId: draft._saveOperationId,
+        record: { ...draft, Detalle: draft.Detalle.map((line) => ({ ...line })) },
+      });
+      updateDbRecord("Presupuestos_Independientes", result, "IDPresupuesto");
+      state.independentBudgetDraft = null;
+      toast(editing ? "Presupuesto actualizado." : `Presupuesto Nº ${result.NumeroPresupuesto} creado.`);
+      renderIndependentBudgetDetail(result);
+    } catch (error) {
+      if (error instanceof SessionExpiredError) throw error;
+      await errorModal(
+        "No se pudo guardar el presupuesto",
+        `${error.message}\n\nLos datos ingresados siguen conservados en este formulario. Corregí el problema del servidor y volvé a presionar Guardar; no es necesario volver a cargarlos.`,
+      );
+    } finally {
+      state.independentBudgetSaving = false;
+      if (button?.isConnected) { button.disabled = false; button.textContent = editing ? "Guardar cambios" : "Guardar presupuesto"; }
+    }
+  });
+}
+
+async function openIndependentBudgetDetail(id) {
+  await withSession(async () => renderIndependentBudgetDetail(await fetchIndependentBudget(id)));
+}
+
+function renderIndependentBudgetDetail(record) {
+  const detail = parseBudgetDetail(record.Detalle);
+  const status = independentBudgetStatus(record);
+  const annulled = status === "Anulado";
+  $("#content").innerHTML = `
+    <div class="toolbar"><div><p class="eyebrow">Presupuesto independiente</p><h2>Nº ${esc(record.NumeroPresupuesto)}</h2></div><button class="ghost" id="budgetDetailBack" type="button">Volver al listado</button></div>
+    <section class="panel budget-detail-card ${annulled ? "is-annulled" : ""}">
+      <div class="budget-detail-heading"><div><span class="budget-status" data-budget-status="${status.toLowerCase()}">${status}</span><h3>${esc(record.Cliente)}</h3><p>${esc(record.Moto || "Motocicleta no informada")}${record.Dominio ? ` · ${esc(record.Dominio)}` : ""}</p></div><strong>${budgetMoney(record.Total)}</strong></div>
+      <dl class="budget-data-grid">
+        <div><dt>Fecha</dt><dd>${esc(argentinaDate(record.Fecha))}</dd></div><div><dt>Teléfono</dt><dd>${esc(record.Telefono || "—")}</dd></div><div><dt>Localidad</dt><dd>${esc(record.Localidad || "—")}</dd></div><div><dt>Motor</dt><dd>${esc(record.Motor || "—")}</dd></div><div><dt>Cuadro</dt><dd>${esc(record.Cuadro || "—")}</dd></div><div><dt>Color</dt><dd>${esc(record.Color || "—")}</dd></div>
+      </dl>
+      <div class="budget-detail-table-wrap"><table><thead><tr><th>Cant.</th><th>Descripción</th><th>Precio unitario</th><th>Importe</th></tr></thead><tbody>${detail.map((line) => `<tr><td>${esc(line.Cantidad)}</td><td>${esc(line.Descripcion)}</td><td>${budgetMoney(line.PrecioUnitario)}</td><td>${budgetMoney(line.Importe ?? budgetLineCents(line) / 100)}</td></tr>`).join("")}</tbody></table></div>
+      <div class="budget-detail-actions">
+        ${annulled ? "" : `<button type="button" data-budget-edit="${esc(record.IDPresupuesto)}">Editar</button>`}
+        <button type="button" class="ghost" data-budget-duplicate="${esc(record.IDPresupuesto)}">Duplicar</button>
+        <button type="button" class="ghost" data-budget-print="${esc(record.IDPresupuesto)}">Imprimir / Guardar PDF</button>
+        <button type="button" class="budget-whatsapp-button" data-budget-whatsapp="${esc(record.IDPresupuesto)}">${whatsappIcon}<span>Enviar por WhatsApp</span></button>
+        ${annulled ? "" : `<button type="button" class="danger-button" data-budget-cancel="${esc(record.IDPresupuesto)}">Anular</button>`}
+      </div>
+    </section>`;
+  $("#budgetDetailBack").onclick = renderIndependentBudgets;
+  wireIndependentBudgetActions();
+}
+
+async function duplicateIndependentBudget(id) {
+  await withSession(async () => {
+    const result = await api("duplicateIndependentBudget", { IDPresupuesto: id, operationId: budgetOperationId("duplicate_budget") });
+    updateDbRecord("Presupuestos_Independientes", result, "IDPresupuesto");
+    toast(`Duplicado creado como Nº ${result.NumeroPresupuesto}.`);
+    renderIndependentBudgetDetail(result);
+  });
+}
+
+async function cancelIndependentBudget(id) {
+  const accepted = await confirmModal({
+    title: "¿Anular este presupuesto?",
+    message: "Se conservará en el historial y no podrá volver a editarse.",
+    cancelText: "Conservar", confirmText: "Sí, anular", danger: true,
+  });
+  if (!accepted) return;
+  await withSession(async () => {
+    const result = await api("cancelIndependentBudget", { IDPresupuesto: id, operationId: budgetOperationId("cancel_budget") });
+    updateDbRecord("Presupuestos_Independientes", result, "IDPresupuesto");
+    toast("Presupuesto anulado.");
+    renderIndependentBudgetDetail(result);
+  });
+}
+
+function formatIndependentBudgetNumber(value) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  return digits ? digits.padStart(6, "0").slice(-6) : "000000";
+}
+
+function buildIndependentBudgetPrint(record) {
+  document.querySelectorAll(".budget-print-document").forEach((node) => node.remove());
+  const detail = parseBudgetDetail(record.Detalle);
+  const printNumber = formatIndependentBudgetNumber(record.NumeroPresupuesto);
+  const signed = Boolean(state.token) && ["ADMIN", "EMPLEADO"].includes(state.role) && String(record.Estado) !== "Anulado";
+  const rows = detail.map((line) => `<tr><td>${esc(line.Cantidad)}</td><td>${esc(line.Descripcion)}</td><td>${budgetMoney(line.Importe ?? budgetLineCents(line) / 100)}</td></tr>`).join("");
+
+  const node = document.createElement("article");
+  node.className = "budget-print-document";
+  node.innerHTML = `
+    <div class="budget-print-frame">
+      <header class="budget-print-header"><div class="budget-print-brand"><img src="logo-motomania.png" alt="MotoManía"><p>Av. Aristóbulo del Valle 5290, Santa Fe<br>Tel. 342 520 8023</p></div><div class="budget-print-title"><b class="budget-x">X</b><div><h1>PRESUPUESTO</h1><p>Documento no válido como factura</p><dl><div><dt>Nº</dt><dd>${esc(printNumber)}</dd></div><div><dt>Fecha</dt><dd>${esc(argentinaDate(record.Fecha))}</dd></div></dl></div></div></header>
+      ${String(record.Estado) === "Anulado" ? '<div class="budget-print-annulled">ANULADO</div>' : ""}
+      <section class="budget-print-data"><div><b>Moto</b><span>${esc(record.Moto || "—")}</span></div><div><b>Señor/es</b><span>${esc(record.Cliente)}</span></div><div><b>Teléfono</b><span>${esc(record.Telefono || "—")}</span></div><div><b>Localidad</b><span>${esc(record.Localidad || "—")}</span></div><div><b>Dominio</b><span>${esc(record.Dominio || "—")}</span></div><div><b>Motor</b><span>${esc(record.Motor || "—")}</span></div><div><b>Cuadro</b><span>${esc(record.Cuadro || "—")}</span></div><div><b>Color</b><span>${esc(record.Color || "—")}</span></div></section>
+      <div class="budget-print-table-area"><img class="budget-watermark" src="Motocicleta%20deportiva%20monocromática%20aislada.png" alt=""><table class="budget-print-table"><thead><tr><th>Cant.</th><th>DESCRIPCIÓN</th><th>IMPORTE</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="budget-print-total"><span>TOTAL</span><strong>${budgetMoney(record.Total)}</strong></div>
+      <footer class="budget-print-footer"><div><b>LOS PRECIOS SON EXPRESADOS EN PESOS, LOS MISMOS PUEDEN SUFRIR VARIACIÓN SIN PREVIO AVISO.</b><strong>PRESUPUESTO VÁLIDO POR 15 DÍAS.</strong></div>${signed ? '<div class="budget-print-signature"><img class="budget-workshop-seal" src="Sello%20MotoMania.png" alt="Firma y sello del taller"><small>Firma y sello del taller</small></div>' : '<div class="budget-print-signature"><small>Sin firma del taller</small></div>'}</footer>
+    </div>`;
+  document.body.append(node);
+  return node;
+}
+
+// Measure the same A4 layout used by print, with all fonts and images loaded.
+async function prepareIndependentBudgetPrint(node) {
+  const loadImages = () => Promise.all([...node.querySelectorAll("img")].map(async (image) => {
+    if (!image.complete) await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Error("La imagen del presupuesto tardó demasiado en cargar.")), 15000);
+      image.addEventListener("load", () => { clearTimeout(timer); resolve(); }, { once: true });
+      image.addEventListener("error", () => { clearTimeout(timer); reject(Error("No se pudo cargar una imagen del presupuesto.")); }, { once: true });
+    });
+    if (!image.naturalWidth) throw Error("No se pudo cargar una imagen del presupuesto: " + image.getAttribute("src"));
+    await image.decode();
+  }));
+  node.classList.add("budget-print-measuring");
+  try {
+    await document.fonts.ready;
+    await loadImages();
+    const first = node.querySelector(".budget-print-frame");
+    const rows = [...first.querySelectorAll("tbody tr")];
+    rows.forEach((row) => row.remove());
+    const closing = document.createElement("div");
+    closing.className = "budget-print-closing";
+    closing.append(first.querySelector(".budget-print-total"), first.querySelector(".budget-print-footer"));
+    const template = first.cloneNode(true);
+    const pages = [first];
+    const addPage = () => {
+      const page = template.cloneNode(true);
+      node.append(page);
+      pages.push(page);
+      return page;
+    };
+    // A small tolerance avoids fractional-pixel rounding at the paper edge.
+    const fits = (page) => {
+      const area = page.querySelector(".budget-print-table-area");
+      return area.querySelector("table").getBoundingClientRect().height <= area.getBoundingClientRect().height - 1;
+    };
+    let page = first;
+    for (const row of rows) {
+      page.querySelector("tbody").append(row);
+      if (!fits(page)) {
+        row.remove();
+        if (!page.querySelector("tbody tr")) throw Error("Un concepto es demasiado extenso para una hoja A4. Acortá su descripción para imprimir sin cortes.");
+        page = addPage();
+        page.querySelector("tbody").append(row);
+        if (!fits(page)) throw Error("Un concepto es demasiado extenso para una hoja A4. Acortá su descripción para imprimir sin cortes.");
+      }
+    }
+    page.append(closing);
+    if (!fits(page)) {
+      closing.remove();
+      const previous = page;
+      page = addPage();
+      page.append(closing);
+      // Move whole trailing rows so the final sheet always contains concepts.
+      while (previous.querySelector("tbody").lastElementChild) {
+        const row = previous.querySelector("tbody").lastElementChild;
+        page.querySelector("tbody").prepend(row);
+        if (!fits(page)) {
+          previous.querySelector("tbody").append(row);
+          break;
+        }
+      }
+      if (!page.querySelector("tbody tr")) throw Error("El último concepto no deja espacio para el total y la firma. Acortá su descripción.");
+      if (!previous.querySelector("tbody tr")) { previous.remove(); pages.splice(pages.indexOf(previous), 1); }
+    }
+    pages.forEach((sheet, index) => {
+      const number = document.createElement("div");
+      number.className = "budget-print-page-number";
+      number.textContent = `Página ${index + 1} de ${pages.length}`;
+      sheet.append(number);
+    });
+    await loadImages();
+  } catch (error) {
+    node.remove();
+    throw error;
+  } finally {
+    node.classList.remove("budget-print-measuring");
+  }
+}
+
+async function printIndependentBudget(id) {
+  await withSession(async () => {
+    const record = await fetchIndependentBudget(id);
+    if (!state.token || !["ADMIN", "EMPLEADO"].includes(state.role)) throw Error("Iniciá sesión con un usuario autorizado para imprimir presupuestos.");
+    const node = buildIndependentBudgetPrint(record);
+    await prepareIndependentBudgetPrint(node);
+    const oldTitle = document.title;
+    const oldScrollY = window.scrollY;
+    document.title = `Presupuesto_MotoMania_${formatIndependentBudgetNumber(record.NumeroPresupuesto)}`;
+    document.body.classList.add("printing-budget");
+    window.scrollTo(0, 0);
+    window.addEventListener("afterprint", () => {
+      document.body.classList.remove("printing-budget");
+      document.title = oldTitle;
+      node.remove();
+      window.scrollTo(0, oldScrollY);
+    }, { once: true });
+    window.print();
+  });
+}
+
+function normalizeIndependentBudgetWhatsApp(value) {
+  let digits = String(value || "").replace(/\D/g, "");
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  if (digits.startsWith("54")) digits = digits.slice(2);
+  if (digits.startsWith("9") && digits.length === 11) digits = digits.slice(1);
+  digits = digits.replace(/^0+/, "");
+  const withLocalMobilePrefix = digits.match(/^(\d{2,4})15(\d{6,8})$/);
+  if (withLocalMobilePrefix && digits.length === 12)
+    digits = withLocalMobilePrefix[1] + withLocalMobilePrefix[2];
+  return digits.length === 10 ? `549${digits}` : "";
+}
+
+function independentBudgetWhatsAppMessage(record) {
+  const detail = parseBudgetDetail(record.Detalle);
+  const safe = (value, fallback = "") =>
+    String(value ?? fallback)
+      .replace(/\\/g, "\\\\")
+      .replace(/([*_~`])/g, "\\$1")
+      .replace(/[\r\n]+/g, " ")
+      .trim();
+  const quantity = (value) => Number(value).toLocaleString("es-AR", { maximumFractionDigits: 3 });
+  const concepts = detail.map((line) => {
+    const subtotal = line.Importe ?? budgetLineCents(line) / 100;
+    return `• ${quantity(line.Cantidad)} × ${safe(line.Descripcion, "Concepto")} — ${budgetMoney(subtotal)}`;
+  });
+  return [
+    "🏍️ *MOTOMANÍA*",
+    `*PRESUPUESTO Nº ${safe(record.NumeroPresupuesto)}*`,
+    "",
+    `*Cliente:* ${safe(record.Cliente)}`,
+    `*Motocicleta:* ${safe(record.Moto, "No informada")}`,
+    `*Dominio:* ${safe(record.Dominio, "No informado")}`,
+    `*Fecha de emisión:* ${safe(argentinaDate(record.Fecha))}`,
+    "",
+    "*DETALLE*",
+    ...concepts,
+    "",
+    `*TOTAL: ${budgetMoney(record.Total)}*`,
+    "",
+    "Presupuesto válido por 15 días. Los precios están expresados en pesos y pueden sufrir variación sin previo aviso.",
+    "",
+    "_Gracias por confiar en MOTOMANÍA._",
+  ].join("\n");
+}
+
+function openIndependentBudgetShareDialog(record, message, whatsappUrl) {
+  const supportsFileShare =
+    typeof navigator.share === "function" &&
+    typeof navigator.canShare === "function" &&
+    typeof File === "function";
+  const overlay = document.createElement("div");
+  overlay.className = "app-modal-overlay budget-share-overlay";
+  overlay.innerHTML = `<section class="app-modal budget-share-modal" role="dialog" aria-modal="true" aria-labelledby="budget-share-title">
+    <h2 id="budget-share-title">Enviar presupuesto por WhatsApp</h2>
+    <p>El mensaje ya está preparado para ${esc(record.Cliente)}. WhatsApp se abrirá con el texto cargado, pero el envío siempre queda a tu cargo.</p>
+    <div class="budget-share-steps">
+      <div><b>1</b><span>Guardá el documento profesional como PDF.</span></div>
+      <div><b>2</b><span>${supportsFileShare ? "Elegí ese PDF para compartirlo desde las funciones nativas del dispositivo." : "Abrí WhatsApp y adjuntá manualmente el PDF guardado."}</span></div>
+    </div>
+    <p class="budget-share-status" aria-live="polite"></p>
+    <input class="budget-share-file" type="file" accept="application/pdf,.pdf" hidden>
+    <div class="budget-share-actions">
+      <button type="button" class="ghost" data-budget-save-pdf>Guardar PDF</button>
+      ${supportsFileShare ? `<button type="button" class="budget-native-share" data-budget-share-file>Elegir PDF y compartir</button>` : ""}
+      <button type="button" class="budget-whatsapp-button" data-budget-open-whatsapp>${whatsappIcon}<span>Abrir WhatsApp</span></button>
+      <button type="button" class="ghost" data-budget-share-close>Cerrar</button>
+    </div>
+  </section>`;
+  const status = overlay.querySelector(".budget-share-status");
+  const fileInput = overlay.querySelector(".budget-share-file");
+  const close = () => {
+    document.removeEventListener("keydown", onKeydown);
+    overlay.remove();
+    document.body.classList.remove("modal-open");
+  };
+  const onKeydown = (event) => {
+    if (event.key === "Escape") close();
+  };
+  overlay.querySelector("[data-budget-share-close]").onclick = close;
+  overlay.querySelector("[data-budget-save-pdf]").onclick = async () => {
+    status.textContent = "En el diálogo de impresión elegí Guardar como PDF. Luego regresá a esta ventana.";
+    await printIndependentBudget(record.IDPresupuesto);
+  };
+  overlay.querySelector("[data-budget-open-whatsapp]").onclick = () => {
+    window.open(whatsappUrl, "_blank", "noopener");
+    close();
+  };
+  if (supportsFileShare) {
+    overlay.querySelector("[data-budget-share-file]").onclick = () => fileInput.click();
+    fileInput.onchange = async () => {
+      const file = fileInput.files?.[0];
+      if (!file) return;
+      if (file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) {
+        status.textContent = "Seleccioná el PDF generado desde Imprimir / Guardar PDF.";
+        return;
+      }
+      const shareData = {
+        files: [file],
+        title: `Presupuesto MotoManía ${record.NumeroPresupuesto}`,
+        text: message,
+      };
+      if (!navigator.canShare({ files: [file] })) {
+        status.textContent = "Este navegador no permite compartir archivos PDF. Usá Abrir WhatsApp y adjuntalo manualmente.";
+        return;
+      }
+      try {
+        await navigator.share(shareData);
+        status.textContent = "El dispositivo abrió sus opciones para compartir. Confirmá el destinatario y el envío allí.";
+      } catch (error) {
+        if (error?.name !== "AbortError")
+          status.textContent = "No se pudo abrir el menú para compartir. Podés abrir WhatsApp y adjuntar el PDF manualmente.";
+      }
+    };
+  }
+  overlay.addEventListener("mousedown", (event) => {
+    if (event.target === overlay) close();
+  });
+  document.body.classList.add("modal-open");
+  document.body.append(overlay);
+  document.addEventListener("keydown", onKeydown);
+  overlay.querySelector("[data-budget-save-pdf]").focus();
+}
+
+async function shareIndependentBudgetWhatsApp(id) {
+  await withSession(async () => {
+    const record = await fetchIndependentBudget(id);
+    const phone = normalizeIndependentBudgetWhatsApp(record.Telefono);
+    if (!phone) {
+      await errorModal(
+        "Teléfono no válido para WhatsApp",
+        "Ingresá un número argentino con código de área, por ejemplo 342 520 8023, y guardá nuevamente el presupuesto.",
+      );
+      return;
+    }
+    const message = independentBudgetWhatsAppMessage(record);
+    const url = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+    openIndependentBudgetShareDialog(record, message, url);
+  });
+}
+
+function wireIndependentBudgetActions() {
+  document.querySelectorAll("[data-budget-view]").forEach((button) => button.onclick = () => openIndependentBudgetDetail(button.dataset.budgetView));
+  document.querySelectorAll("[data-budget-edit]").forEach((button) => button.onclick = () => openIndependentBudgetForm(button.dataset.budgetEdit));
+  document.querySelectorAll("[data-budget-duplicate]").forEach((button) => button.onclick = () => duplicateIndependentBudget(button.dataset.budgetDuplicate));
+  document.querySelectorAll("[data-budget-print]").forEach((button) => button.onclick = () => printIndependentBudget(button.dataset.budgetPrint));
+  document.querySelectorAll("[data-budget-whatsapp]").forEach((button) => button.onclick = () => shareIndependentBudgetWhatsApp(button.dataset.budgetWhatsapp));
+  document.querySelectorAll("[data-budget-cancel]").forEach((button) => button.onclick = () => cancelIndependentBudget(button.dataset.budgetCancel));
 }
 
 function wire() {
